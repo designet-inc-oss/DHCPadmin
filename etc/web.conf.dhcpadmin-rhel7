@@ -1,0 +1,21 @@
+[dhcpadmin]
+DhcpdConfPath=/usr/local/postldapadmin/etc/dhcp/dhcpd.conf
+Dhcpd6ConfPath=/usr/local/postldapadmin/etc/dhcp/dhcpd6.conf
+DhcpdLeasesPath=/var/lib/dhcpd/dhcpd.leases
+Dhcpd6LeasesPath=/var/lib/dhcpd/dhcpd6.leases
+LockTime=600
+LeasesListNum=20
+DefDomain=domainname
+DefLeaseTime=21600
+DefMaxLeaseTime=43200
+DhcpdRestartCom=/usr/bin/sudo /usr/bin/systemctl restart dhcpd
+Dhcpd6RestartCom=/usr/bin/sudo /usr/bin/systemctl restart dhcpd6
+DhcpdCheckCom=/usr/bin/sudo /usr/bin/systemctl status dhcpd
+Dhcpd6CheckCom=/usr/bin/sudo /usr/bin/systemctl status dhcpd6
+DhcpdConfTestCom=/usr/bin/sudo /usr/sbin/dhcpd -cf /etc/dhcp/dhcpd.conf -t
+Dhcpd6ConfTestCom=/usr/bin/sudo /usr/sbin/dhcpd -6 -cf /etc/dhcp/dhcpd6.conf -t
+ImportCsvMode=1
+PathToCsvInput=/data/csv/input
+PathToCsvBackup=/data/csv/output
+MailToAddr=test1@example.com
+MailFromAddr=test2@dexample.com

@@ -1,0 +1,4052 @@
+<?php
+
+define("MAX_SHNET_LENGTH", "255");
+//define("FUNC_FALSE", FALSE);
+//define("FUNC_TRUE", TRUE);
+define("MAX_IP_LENGTH", "15");
+define("MAX_MAC_LENGTH", "17");
+define("MAX_HOSTNAME_LENGTH", "128");
+
+define("LOCK_FALSE", "2");
+
+/* ロックファイル名 */
+define("LOCKFILE", "dhcpadmin.lock");
+define("VARDIR", "var/");
+
+session_start();
+
+/***********************************************************
+ * analyze_dhcpd_conf()
+ *
+ * dhcp.confファイルの分析処理を行う
+ *
+ * [引数]
+ *        $pathfile     分析したいファイルパス
+ *        $type         IPv4またはIPv6
+ *
+ * [返り値]
+ *        TRUE           正常
+ *        FALSE          エラー
+ *
+ **********************************************************/
+function analyze_dhcpd_conf($pathfile, $type) 
+{
+    /* dhcpd.confファイルの読み込みチェック */
+    if (is_readable_file($pathfile) === FALSE) {
+        return FALSE;
+    }
+
+    $filedata = array();
+    /* subnetとshared-networkを保存する配列 */
+    $subnetdata = array();
+    
+    /* 返す値 */
+    $rval = 0;
+    $countelm = 0;
+
+    /* 固定変数を定義する */
+    define("STR_EMPTY", "");
+    define("STR_START", "{");
+    define("STR_END", "}");
+
+    /* タイプチェックする */
+    if ($type == "IPv4") {
+        /* IPv4の場合 */
+        include "ipv4_constant.php";
+    } else if ($type == "IPv6") {
+        /* IPv6の場合 */
+        include "ipv6_constant.php";
+    }
+
+    /* 既に解析が行われているかチェック */
+    if (isset($_SESSION["mtime"][STR_IP])) {
+        /* ファイルの更新時間を取得 */
+        $file_time = filemtime($pathfile);
+        if ($_SESSION["mtime"][STR_IP] >= $file_time) {
+            return TRUE;
+        }
+    }
+
+    /* セッションの変数を解除 */
+    unset($_SESSION[STR_IP]);
+
+    /* ファイルの全て内容を呼び込む */
+    $filedata = file($pathfile);
+    if ($filedata == FALSE) {
+        return FALSE;
+    }
+    
+    /* 共通部分を読み込む */	
+    $line = analyze_common($filedata);    
+
+    /* 長さを計算する */
+    $len = count($filedata);
+    /* 共通部分以降を取得する */ 
+    for ($i = $line; $i < $len; $i++) {
+        /* 空白文字(スペース、改行、タブ)を削除する */
+        $data = trim($filedata[$i]);
+        /* 空白文字が1連続以上していたら、スペース1つにまとめる */
+        $data = preg_replace('/\s+/', ' ', $data);
+        /* 空白行ではない場合 */
+        if ($data != STR_EMPTY) {
+            /* 配列に値を代入する */ 
+            $subnetdata[] = $data;
+        }
+    }
+
+    /* subnetとshared-networkを分析する */
+    $rval = analyze_subnet_shnetwork($subnetdata);
+    /* 返値をチェックする */
+    if ($rval === FALSE) {
+        /* セッションを解放する */
+        session_destroy();
+        return FALSE;
+    }
+
+    /* ファイルの最終解析時間を記録 */
+    $_SESSION["mtime"][STR_IP] = filemtime($pathfile);  
+
+    return TRUE;
+}
+
+/***********************************************************
+ * analyze_common
+ *
+ * dhcp.confファイルの共通部分の分析処理を行う
+ *
+ * [引数]
+ *        $filedata    ファイルの中身を保存する配列
+ *
+ * [返り値]
+ *        $sline       subnetまたはshared-network開始行
+ *
+ **********************************************************/
+function analyze_common($filedata)
+{
+    /* subnetまたはshared-network開始行 */
+    $sline = 0;
+    $commondata = array();
+
+    /* subnet行をチェックするためのパターン */
+    $subnetstr = '/^ *' . STR_SUBNET . ' .* {$/';
+    /* shared-network行をチェックするためのパターン */
+    $shnetworkstr = '/^ *' . STR_SHNETWORK . ' .* {$/';
+
+    /* subnetかshared-networkまで繰り返す */
+    foreach ($filedata as $row) {
+        /* 共通部分が終了するかどうかをチェックする */
+        if ((preg_match($subnetstr, $row) == 1) || (preg_match($shnetworkstr, $row) == 1)) {
+            break;
+        }
+        /* 共通行を保存する */
+        $commondata[$sline] = $row;
+        $sline++;
+    }
+    /* 共通部分がある場合 */
+    if ($sline > 0) {
+        set_common($commondata);
+    }
+    /* subnetとshared-network開始行を返す */
+    return $sline;
+}
+
+/***********************************************************
+ * set_common
+ *
+ * セッションに共通部分を設定する
+ *
+ * [引数]
+ *        $commondata    共通部分を保存する配列
+ *
+ * [返り値]
+ *        なし
+ *
+ **********************************************************/
+function set_common($commondata)
+{
+    /*初期化*/
+    $_SESSION[STR_IP]["_common"] = STR_EMPTY;
+    /*全て配列の中身を読んでいる*/
+    foreach ($commondata as $row) {
+        /*セッションに値を設定する*/
+        $_SESSION[STR_IP]["_common"] .= $row;
+    }
+}
+
+/***********************************************************
+ * analyze_subnet_shnetwork
+ *
+ * dhcp.confファイルのsubnetかつshared-networkの分析処理を行う
+ *
+ * [引数]
+ *        $subnetdata    subnetかつshared-networkを保存する配列
+ *
+ * [返り値]
+ *        TRUE              正常
+ *        FALSE             エラー
+ *
+ **********************************************************/
+function analyze_subnet_shnetwork($subnetdata)
+{
+    /* 変数を宣言する */
+    $shared_flag = 0; 
+    $other_flag = 0;
+    $newlinenum = 0;
+    $shnwname = STR_EMPTY;
+    $count = 0;
+    $rval = "";
+    $arr_shnetwork = array();
+    /* チェックパターン */
+    $subnetstr = '/^' . STR_SUBNET . ' .* {$/';
+    $shnetworkstr = '/^' . STR_SHNETWORK . ' .* {$/';
+	
+    /* 長さを計算する */
+    $len = count($subnetdata);
+    /* 最後行まで繰り返す */
+    while ($count < $len) {
+        /* shared-networkを探す */
+        if (preg_match($shnetworkstr, $subnetdata[$count]) == 1) {
+            /* shared_network行を分析する */
+            $arr_shnetwork = explode(" ",$subnetdata[$count]);
+            if (count($arr_shnetwork) != 3) {
+                return FALSE;
+            }
+            $shnwname = $arr_shnetwork[1];
+            if ($shnwname == "") {
+                return FALSE;
+            }
+            $rval = analyze_shared_network($shnwname, $subnetdata, $count + 1,
+                                          $newlinenum);
+            $count = $newlinenum;
+            /* shared-network部分にエラーがあったら */
+            if ($rval === FALSE) {
+                return FALSE;
+            }
+        /* subnetを探す */
+        } else if (preg_match($subnetstr, $subnetdata[$count]) == 1) {
+            /* subnetを見つけた場合 */
+            $rval = analyze_subnet($subnetdata, $count + 1, $newlinenum);
+            /* subnet部分はエラーがあったら */
+            if ($rval === FALSE) {
+                return FALSE;
+            }
+            $count = $newlinenum;
+        /* shnetかsubnetの間の行は読み飛ばす */
+        } else if ($subnetdata[$count] == "" || $subnetdata[$count] == " ") {
+            $count++;
+        /* shnetかsubnetの間に余計な行が存在したら不正な書式とみなす。
+         * '}'が過剰にかかれている場合もここに入る */
+        } else {
+            return FALSE;
+        }
+    }
+
+    return TRUE;	
+}
+
+/***********************************************************
+ * analyze_shared_network
+ *
+ * dhcp.confファイルのshared-networkの分析処理を行う
+ *
+ * [引数]
+ *        $shnwname      shared-networkの名前
+ *        $subnetdata    subnetかつshared-networkを保存する配列
+ *        $linenum       shared-networkの開始行
+ *        $newlinenum    このshared-network部分の終了行
+ *
+ * [返り値]
+ *        TRUE           正常
+ *        FALSE          異常
+ *
+ **********************************************************/
+function analyze_shared_network($shnwname, $subnetdata, $linenum, &$newlinenum)
+{
+    $line = STR_EMPTY;
+    $num = 0;
+    $sbnum = 0;
+    $ebnum = 0;
+    $rval = "";
+    /* 括弧が正しいかどうかチェックする */
+    $flag = 0;
+    /* shared-network部分を保存する配列 */
+    $shnetworkline = array();
+
+    /* shared-netowork部分が終了するまで繰り返す */
+    foreach ($subnetdata as $line) {
+        $num++;
+        /* shared-networkの開始行に移動する */
+        if ($num < $linenum) {
+            continue;
+        }
+
+        /* {を見つけた場合 */
+        if (preg_match('/.* {$/', $line)) {
+            $sbnum++;
+        }
+        /* }を見つけた場合 */
+        if ($line == "}") {
+            $ebnum++;
+        }
+
+        /* 配列に値を代入する */
+        $shnetworkline[] = $line;
+
+        /* 括弧の全て内容を読み込んだ */
+        if ($sbnum == $ebnum) { 
+            $flag = 1;
+            $rval = get_all_subnet_in_shnetwork($shnwname, $shnetworkline); 
+            if ($rval === FALSE) {
+                return FALSE;
+            }		
+            break;
+        }
+    }
+
+    /* カッコの対応が間違っていたら */
+    if ($flag == 0) {
+        return FALSE;
+    }
+
+    /* 現在読んでいる行数を返す */
+    $newlinenum = $num;
+    return TRUE;
+}
+
+/***********************************************************
+ * get_all_subnet_in_shnetwork
+ *
+ * shaered-networkの間に全てsubnet部分を取得する
+ *
+ * [引数]
+ *        $shnwname         shared-networkの名前
+ *        $shnetworkline    shared-networkを保存する配列
+ *
+ * [返り値]
+ *        TRUE              正常              
+ *        FALSE             エラーsubnet部分
+ *
+ **********************************************************/
+function get_all_subnet_in_shnetwork($shnwname, $shnetworkline)
+{
+    /* subnetの書式をチェックするためのパターン */
+    $subnetstr = '/^' . STR_SUBNET . '.* {$/';
+    /* 変数を宣言する */
+    $line = STR_EMPTY;
+    $num = 0;
+    $sbnum = 0;
+    $ebnum = 0;
+    $count = 0;
+    $newlinenum = 0;
+    $rval = "";
+    /* subnet部分があるかどうかをチェックする */
+    $flagsubnet = 0;
+
+    /* shared-netowrk部分の長さを計算する */
+    $len = count($shnetworkline);
+    /* 最後まで繰り返す */
+    while ($count < $len) {
+        $num++;
+        /* subnet部分を見つけた場合 */
+        if (preg_match($subnetstr, $shnetworkline[$count]) == 1) {
+            /* フラグを変更する */
+            $flagsubnet = 1;
+            /* get_subnet_in_shnetworkを呼び出す */
+            $rval = get_subnet_in_shnetwork($shnwname, $shnetworkline,
+                                            $count + 1, $newlinenum);
+            $count = $newlinenum;
+            if ($rval === FALSE) {
+                return FALSE;
+            }
+        } else {
+            $count++;
+        }
+    }
+    /* サブネット部分がなったら */
+    if ($flagsubnet == 0) {
+        /* セッションにshared-networkの値は空白を設定する */
+        $_SESSION[STR_IP][$shnwname] = array();
+    }
+    /* 読んでいる行位置を返す */
+    return TRUE;
+}
+
+/***********************************************************
+ * get_subnet_in_shnetwork
+ *
+ * subnet部分を取得する
+ *
+ * [引数]
+ *        $shnwname         shared-networkの名前
+ *        $shnetworkline    shared-networkを保存する配列
+ *        $curline          subnet部分の開始行
+ *        $num              次のsubnet部分の開始行
+ * [返り値]
+ *        TRUE              正常   
+ *        FALSE             エラーsubnet部分
+ *
+ **********************************************************/
+function get_subnet_in_shnetwork($shnwname, $shnetworkline, $curline, &$newlinenum)
+{
+    /* 変数を宣言する */
+    $line = STR_EMPTY;
+    $num = 0;
+    /* 開始行数 */
+    $snum = 0;
+    /* 終了行数 */
+    $enum = 0;
+    /* サブネット部分を保存する部分 */
+    $subnetline = array();
+
+    /* サブネット部分を見つけて繰り返す */
+    foreach ($shnetworkline as $line) {
+        $num++;
+        if ($num >= $curline) {
+            /* {を見つけた場合 */
+            if (preg_match('/.* {/', $line)) {
+                $snum++;
+            }
+            /* 完了括弧をチェックする */
+            if ($line == "}") {
+                $enum++;
+            }
+            /* 配列に値を保存する */
+            $subnetline[] = $line;
+            /* 括弧の中の全ての内容を読み込んだ */		
+            if ($snum == $enum) {
+                $rval = analyze_subnet_info($shnwname, $subnetline);
+                if ($rval === FALSE) {
+                    return FALSE;
+                }	
+                break;
+            }
+        }
+    }
+    /* 現在読んでいる行を返す */
+    $newlinenum = $num;
+    return TRUE;
+}
+
+/***********************************************************
+ * analyze_subnet_info
+ *
+ * subnet部分の分析処理を行う
+ *
+ * [引数]
+ *        $shnwname         shared-networkの名前
+ *        $subnetline       shared-networkを保存する配列
+ *
+ * [返り値]
+ *        TRUE              正常
+ *        FALSE             エラーホスト部分
+ *
+ **********************************************************/
+function analyze_subnet_info($shnwname, $subnetline)
+{
+    /* 変数を宣言する */
+    $status = 0;
+    $len = 0;
+    $linenum = 0;
+    $subnetname = STR_EMPTY;
+    $hostname = STR_EMPTY;
+    $data = array();
+    /* ホスト部分を保存する配列 */
+    $hostitem = array();
+    /* ホスト部分の以外を保存する配列 */
+    $nohostitem = array();
+    /* ホスト行の書式をチェックするためにのパターン */
+    $hoststr = '/^' . STR_HOST . ' .* {$/';
+	
+    /* 長さを計算する */
+    $len = count($subnetline);
+
+    /* v4とv6の違いを吸収する */
+    if (STR_IP == 'v4') {
+        /* subnetが見つかった行を分割する */
+        $data = explode(" ", $subnetline[0]);
+        /* サブネットの情報を保存する */
+        $subnetname = $data[1]. "/". $data[3];
+    } else if (STR_IP == 'v6') {
+        /* subnetが見つかった行を解析する */
+        $data = explode(" ", $subnetline[0]);
+        $subnetname = $data[1];
+    }
+
+    $linenum = 0;
+    /* サブネット部分の間に内容を読み込む */
+    while ($linenum < $len - 1) {
+        /* { を見つけた */
+        if (preg_match($hoststr, $subnetline[$linenum]) == 1) {
+            $data = explode(" ", $subnetline[$linenum]);
+            /* ホスト名を取得する */
+            $hostname = $data[1];
+            $status++;			
+        } else if ($subnetline[$linenum] == "}") {
+            /* {を見つけた */
+            /* 前に{を見つけていなかったら、エラーを返す */
+            if ($status != 1 ) {
+                return FALSE;     
+            }
+            $status--;
+            /* make_host関数を呼び出す */ 
+            analyze_subnet_host($shnwname, $subnetname, $hostname, $hostitem);
+
+            /* 配列ホストを初期化する */
+            unset($hostitem);
+            $hostitem = array();
+        }
+        if ($status == 1) {
+            array_push($hostitem, $subnetline[$linenum]);
+        } else {
+            if ($subnetline[$linenum] != "}") {
+                array_push($nohostitem, $subnetline[$linenum]);
+            }
+        }
+        $linenum++;
+    }
+    /* ホストの以外データを作成する */
+    analyze_subnet_items($shnwname, $subnetname, $nohostitem);
+    return TRUE;
+}
+
+/***********************************************************
+ * analyze_subnet_host
+ *
+ * subnet部分の分析処理を行ってセッションにホスト部分を設定する
+ *
+ * [引数]
+ *        $shnwname       shared-networkの名前
+ *        $subnetname     subnetの名前
+ *        $hostname       ホストの名前
+ *        $hostitem       クライアント情報「{」に対応する「}」
+ *                        の行を保存する配列
+ *
+ * [返り値]
+ *       なし
+ *
+ **********************************************************/
+function analyze_subnet_host($shnwname, $subnetname, $hostname, $hostitem)
+{
+    $num = 0;
+    $tmp = array();
+    /* クライアントの情報を保存する変数 */
+    $vhost = STR_EMPTY;
+
+    /* 「host ... {」 と 「｝」の中に設定される可能性のあるオプション */
+    $host_params = array( STR_HARDWARE => ",",
+                          STR_FIXEDADDR  => ",",
+                          STR_HOSTNAME => ",",
+                          STR_BOOT => ","
+                        );
+
+    $patternboot = '/^' . '(allow|deny)' . ' ' . STR_BOOT . '.*;$/';
+    $patternhost = '/^' . STR_HOSTNAME . ' ' . '.*;$/';
+    $patternaddr = '/^' . STR_FIXEDADDR . ' ' . '.*;$/';
+    $patternhard = '/^' . STR_HARDWARE . ' ' . '.*;$/';
+
+    /* ホスト部分をチェックするために、繰り返す */
+    foreach ($hostitem as $item) {
+        /* 行の書式をチェックする */
+        if (preg_match($patternhard, $item) == 1) {
+            $tmp = str_replace(STR_HARDWARE, STR_EMPTY, $item);
+            $tmp = substr($tmp, 0, -1);
+            $tmp = trim($tmp);
+            $host_params[STR_HARDWARE] = $tmp . ",";
+        }
+
+        /* 行の書式をチェックする */
+        if (preg_match($patternaddr, $item) == 1) {
+            $tmp = str_replace(STR_FIXEDADDR, STR_EMPTY, $item);
+            $tmp = substr($tmp, 0, -1);
+            $tmp = trim($tmp);
+            $host_params[STR_FIXEDADDR] = $tmp . ",";
+        }
+  
+        /* 行の書式をチェックする */
+        if (preg_match($patternhost, $item) == 1) {
+            $tmp = str_replace(STR_HOSTNAME, STR_EMPTY, $item);
+            $tmp = substr($tmp, 0, -1);
+            $tmp = trim($tmp);
+            $host_params[STR_HOSTNAME] = $tmp . ",";
+        }
+
+        /* 行の書式をチェックする */
+        if (preg_match($patternboot, $item) == 1) {
+            $tmp = str_replace(STR_BOOT, STR_EMPTY, $item);
+            $tmp = substr($tmp, 0, -1);
+            $tmp = trim($tmp);
+            $host_params[STR_BOOT] = $tmp . ",";
+        }
+    }
+
+    foreach ($host_params as $param) {
+        $vhost .= $param;
+    }
+    /* 最後の「,」を削除する */
+    $vhost = substr($vhost, 0, -1);
+    /* vhost変数に改行をつける */
+    $vhost .= "\n";
+    $vhost = $hostname . "," . $vhost;
+    /* セッションに代入する */
+    set_subnet_host($shnwname, $subnetname, $vhost);
+}
+
+
+/***********************************************************
+ * set_subnet_host
+ *
+ * セッションにホスト部分を設定する
+ *
+ * [引数]
+ *        $shnwname         shared-networkの名前
+ *        $subnetname       subnetの名前
+ *        $hostinfo         ホストの値
+ *
+ * [返り値]
+ *        なし        
+ *
+ **********************************************************/
+function set_subnet_host($shnwname, $subnetname, $hostifnfo) 
+{
+    /* shared-network をチェックする */
+    if ($shnwname != STR_EMPTY) {
+        /* subnetをチェックする */
+        if ($subnetname != STR_EMPTY) {
+            if (isset($_SESSION[STR_IP][$shnwname][$subnetname]["host"])) {
+                $_SESSION[STR_IP][$shnwname][$subnetname]["host"]
+                                                                 .= $hostifnfo;
+            } else {
+                $_SESSION[STR_IP][$shnwname][$subnetname]["host"] = $hostifnfo;
+            }
+        } else {
+            /* サブネットがない場合、セッションに空白を入れる */
+            $_SESSION[STR_IP][$shnwname] = array();
+        }
+    }
+}
+
+/***********************************************************
+ * analyze_subnet_items
+ *
+ * subnet部分の分析処理を行う
+ *
+ * [引数]
+ *        $shnwname       shared-networkの名前
+ *        $subnetname     subnetの名前
+ *        $nohostitem     ルータ行、ドメイン名行、DNS行、標準リース時間行、
+ *                        最大リース時間行、Extraオプション行、範囲設定行
+ *                        を保存する 
+ *
+ * [返り値]
+ *        なし
+ *
+ **********************************************************/
+function analyze_subnet_items($shnwname, $subnetname, $nohostitem)
+{
+    /* 一時変数 */
+    $tmp = STR_EMPTY;
+    $arrtmp = array();
+    $subnetitem = array( "router" => STR_EMPTY, 
+                         "domain" => STR_EMPTY, 
+                         "leasetime" => STR_EMPTY,
+                         "maxleasetime" => STR_EMPTY, 
+                         "dns" => STR_EMPTY, 
+                         "option" => STR_EMPTY, 
+                         "range" => STR_EMPTY 
+                       );
+
+    /* subnet行の書式のパターン */	
+    $subnet = '/^subnet.*{$/';
+    /* ルータ行の書式のパターン */	
+    $prouter = '/^'. STR_ROUTER. ' '. '.*;$/';
+    /* オプション行の書式のパターン */	
+    $poption = '/^'. STR_OPTION. ' '. '.*;$/';
+    /* DNS行の書式のパターン */	
+    $pdns = '/^'. STR_DNS. ' '. '.*;$/';
+    /* 標準リース時間行の書式のパターン */	
+    $pleasetime = '/^'. STR_LEASETIME. ' '. '.*;$/';
+    /* 最大リース時間行の書式のパターン */	
+    $pmaxleasetime = '/^'. STR_MAXLEASETIME. ' '. '.*;$/';
+    /* ドメイン名行の書式のパターン */	
+    $pdomain = '/^'. STR_DOMAIN. ' '. '.*;$/';
+    /* 範囲行の書式のパターン */	
+    $prange = '/^'. STR_RANGE. ' '. '.*;$/';
+    /* 範囲を保存する変数 */	
+    $vrange = STR_EMPTY;
+    /* オプションを保存する変数 */
+    $vextraoption = STR_EMPTY;
+
+    /* 最後行まで繰り返す */	
+    foreach ($nohostitem as $item) {
+        /* subnet設定を除外*/
+        if (preg_match($subnet, $item)) {
+            continue;
+        }
+
+        /* 標準リース時間の書式をチェックする */
+        if (preg_match($pleasetime, $item)) {
+            $tmp = str_replace(STR_LEASETIME, STR_EMPTY, $item);
+            $tmp = str_replace(";", STR_EMPTY, $tmp);
+            $subnetitem["leasetime"] = trim($tmp);
+            continue;
+        }
+
+        /* 最大リース時間の書式をチェックする */
+        if (preg_match($pmaxleasetime, $item)) {
+            $tmp = str_replace(STR_MAXLEASETIME, STR_EMPTY, $item);
+            $tmp = str_replace(";", STR_EMPTY, $tmp);
+            $subnetitem["maxleasetime"] = trim($tmp);
+            continue;
+        }
+				
+        /* 範囲設定の書式をチェックする */
+        if (preg_match($prange, $item)) {
+            $tmp = str_replace(STR_RANGE, STR_EMPTY, $item);
+            $tmp = str_replace("dynamic-bootp", STR_EMPTY, $tmp);
+            $tmp = str_replace(";", STR_EMPTY, $tmp);
+            $tmp = trim($tmp);
+            $arrtmp = explode(" ", $tmp);
+            /* 範囲設定は複数指定される場合がある */
+            if ($vrange == STR_EMPTY) {
+                $vrange = $arrtmp[0] . "," .$arrtmp[1];
+            } else {
+                $vrange .= "\n". $arrtmp[0] . "," . $arrtmp[1];
+            }    
+            continue;
+        }
+	
+        /* オプションの書式をチェックする */	
+        if (preg_match($poption, $item)) {
+            if (preg_match($prouter, $item)) {
+                $tmp = str_replace(STR_ROUTER, STR_EMPTY, $item);
+                $tmp = str_replace(";", STR_EMPTY, $tmp);
+                $subnetitem["router"] = trim($tmp);
+            } else if (preg_match($pdns, $item)) {
+                $tmp = str_replace(STR_DNS, STR_EMPTY, $item);
+                $tmp = str_replace(";", STR_EMPTY, $tmp);
+                $tmp = str_replace(" ", STR_EMPTY, $tmp);
+                $subnetitem["dns"] = trim($tmp);
+            } else if (preg_match($pdomain, $item)) {
+                $tmp = str_replace(STR_DOMAIN, STR_EMPTY, $item);
+                $tmp = str_replace(";", STR_EMPTY, $tmp);
+                $tmp = trim($tmp);
+                $tmp = rtrim($tmp, "\"");
+                $subnetitem["domain"] = ltrim($tmp, "\"");
+            } else {
+                $tmp = trim($item);
+                $vextraoption .= $tmp. "\n";
+            }
+            continue;
+        }
+
+        $tmp = trim($item);
+        $vextraoption .= $tmp. "\n";
+    /* foreachループの終端 */
+    }
+
+    /* Extra optionがある場合 */
+    if ($vextraoption != STR_EMPTY) {
+        $subnetitem["option"] = trim($vextraoption);
+    }
+    /* 範囲がある場合 */	
+    if ($vrange != STR_EMPTY) {
+        $subnetitem["range"] = $vrange;
+    }
+	
+    /* セッションに値を保存する */
+    set_subnet_items($shnwname, $subnetname, $subnetitem);
+}
+
+
+/***********************************************************
+ * set_subnet_items
+ *
+ * セッションにルータ行、ドメイン名行、DNS行、標準リース時間行、
+ * 最大リース時間行、Extraオプション行、範囲設定行を設定する
+ *
+ * [引数]
+ *        $shnwname       shared-networkの名前
+ *        $subnetname     subnetの名前
+ *        $subnetitem     ルータ行、ドメイン名行、DNS行、標準リース時間行、
+ *                        最大リース時間行、Extraオプション行、範囲設定行
+ *                        を保存する配列 
+ *
+ * [返り値]
+ *        なし
+ *
+ **********************************************************/
+function set_subnet_items($shnwname, $subnetname, $subnetitem)
+{
+    /* sharedがあるかどうか */
+    if ($shnwname != STR_EMPTY) {
+        /* サブネットがあるかどうか */
+        if ($subnetname != STR_EMPTY) {
+            foreach ($subnetitem as $key => $value) {
+                /* セッションのキーに値を設定する */
+                $_SESSION[STR_IP][$shnwname][$subnetname][$key] = $value;
+            }
+        } else {
+            $_SESSION[STR_IP][$shnwname] = array();
+        } 
+    }
+
+}
+
+/***********************************************************
+ * analyze_subnet
+ *
+ * subnet部分単独の分析処理を行う
+ *
+ * [引数]
+ *        $subnetdata       サブネット部分を保存する入れる
+ *        $linenum          サブネット部分の開始行
+ *        $newlinenum       次にサブネット部分の開始行
+ *
+ * [返り値]
+ *        TRUE              正常
+ *        FALSE             エラー
+ *
+ **********************************************************/
+function analyze_subnet($subnetdata, $linenum, &$newlinenum)
+{
+    /* 変数を宣言する */
+    $line = STR_EMPTY;
+    $num = 0;
+    /* 開始行 */
+    $sbnum = 0;
+    /* 終了行 */
+    $ebnum = 0;
+    /* subnet */
+    $shnwname = STR_OTHER;
+    /* サブネット部分を保存する配列 */
+    $subnetline = array();
+
+    $rval = "";
+
+    /* サブネット部分の終了行まで繰り返す */
+    foreach ($subnetdata as $line) {
+        $num++;
+        if ($num >= $linenum) {
+            /*  { を見つけた場合 */
+            if (preg_match('/.* {/', $line)) {
+                $sbnum++;
+            }
+            /*  } を見つけた場合 */
+            if ($line == "}") {
+                $ebnum++;
+            }
+
+            /* 配列に値を代入する */
+            $subnetline[] = $line;
+
+            /* {と｝が一致した場合 */
+            if ($sbnum == $ebnum) {
+                /* subnet部分の中身の分析を行う関数を呼び出す */
+                $rval = analyze_subnet_info($shnwname, $subnetline);
+                if ($rval === FALSE) {
+                    return FALSE;
+                }
+                break;
+            }
+        }
+    }
+
+    /* 「{」と「｝」の数量が等しいかどうかチェックする */
+    if ($sbnum != $ebnum) {
+        return FALSE;
+    }
+
+    /* サブネット部分の開始行を返す */
+    $newlinenum = $num;
+    return TRUE;
+}
+
+/*********************************************************
+ * check_status()
+ *
+ * DHCPサーバの状態取得関数
+ *
+ * [引数]
+ *      $retval        コマンドの実行終了コード
+ *      $command       実行するコマンド
+ *
+ * [返り値]
+ *      FALSE          system関数の実行失敗
+ *      TRUE           system関数の実行成功
+ ********************************************************/
+function check_status(&$retval, $command)
+{
+    /* コマンドを実行 */
+    /* $retvalにコマンドの終了コードが入る */
+    $ret = exec($command, $output, $retval);
+    /* exec関数の実行失敗 */
+    if ($ret === FALSE) {
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/*********************************************************
+ * check_add_shnet()
+ *
+ * Shared-networkの入力値チェック
+ *
+ * [引数]
+ *      $shnet        入力された値
+ * [返り値]
+ *      0        正常
+ *      1        異常(入力値エラー)
+ *      2        異常(値なし)
+ **********************************************************/
+function check_add_shnet($shnet)
+{
+    /* 文字数チェック */
+    /* shnetに値があるか調べる */
+    if (isset($shnet) == FALSE || $shnet == "") {
+        /*値がなかったらエラー*/
+        return 2;
+    }
+    $letters = strlen($shnet);
+    if ($letters < 1 || $letters > MAX_SHNET_LENGTH) {
+        return 1;
+    }
+
+    /* 半角英大小文字、数字、特定記号のみ許可 */
+    $num = "0123456789";
+    $sym = "-";
+    $sl = "abcdefghijklmnopqrstuvwxyz";
+    $ll = strtoupper($sl);
+    $allow_letter = $num . $sl . $ll. $sym;
+    if (strspn($shnet, $allow_letter) != $letters) {
+        return 1;
+    }
+    /*条件通れば正常*/
+    return 0;
+}
+
+/*********************************************************
+ * set_subnet_list()
+ *
+ * タグサブネットリスト情報セット関数
+ *
+ * [引数]
+ *      $subnet_data           入力された値
+ *
+ * [返り値]
+ *      $subnet_option         サブネットリスト
+ ********************************************************/
+function set_subnet_list($subnet_data = array())
+{
+    /*初期化*/
+    $subnet_option = "";
+    /*最後まで繰り返す*/
+    foreach ($subnet_data  as $subnet) {
+        $subnet = escape_html($subnet);
+        /*オプションのタグに値ををセットする*/
+        $subnet_option = $subnet_option. "<option value=\"$subnet\" >". $subnet. "</option> \n";
+    }
+    /*値を返す*/
+    return $subnet_option;
+}
+
+
+/*********************************************************
+ * get_all_subnets
+ *
+ * セッションからサブネットを取得する関数
+ *
+ * [引数]
+ *
+ * [返り値]
+ *      $subnet_data    サブネット部分に相当する文字列
+ ********************************************************/
+function get_all_subnets()
+{
+    $subnet_data = array();
+    /* 現在登録されている全てのシェアードネット、サブネットを習得する */
+    if (isset($_SESSION[STR_IP])) {
+        /* サブネットが存在するかどうか判断する */
+        foreach ($_SESSION[STR_IP] as $sn => $value1) {
+            /* 共通部分ではなく、かつサブネットがある */
+            if ($sn != STR_COMMON && is_array($_SESSION[STR_IP][$sn])) {
+                /* 全てのサブネットを習得する */
+                foreach ($_SESSION[STR_IP][$sn] as $subnet => $value2) {
+                    /* subnet_data配列にサブネットを保存する */
+                    $subnet_data[] = $subnet;
+                }
+            }
+        }
+    }
+    return $subnet_data;
+}
+
+/*********************************************************
+ * check_subnet_in_session()
+ *
+ * サブネットはセッションの中に存在するかどうかをチェックする関数
+ *
+ * [引数]
+ *      $subnet               サブネット値
+ *
+ * [返り値]
+ *      FUNC_TRUE             正常
+ *      FUNC_FALSE            異常
+ ********************************************************/
+
+function check_subnet_in_session($subnet_array, $subnet)
+{
+    /*現在登録されている全てのサブネットを習得する*/
+    foreach ($subnet_array as $sub) {
+        /*subnet_data配列にサブネットを保存する*/
+        if ($sub == $subnet) {
+            /*サブネットを存在する*/
+            return FUNC_TRUE;
+        }
+    }
+    return FUNC_FALSE;
+}
+
+/*********************************************************
+ * check_add_subnet_data()
+ *
+ * 入力データをチェックする関数
+ *
+ * [引数]
+ *      $post                     入力された値
+ *
+ * [返り値]
+ *      FUNC_TRUE                 正常
+ *      FUNC_FALSE                異常
+ ********************************************************/
+function check_add_subnet_data($post)
+{
+
+    /*グロバール変数*/
+    global $msgarr;
+    global $err_msg;
+    global $log_msg;
+
+    /*サブネットは入力しない場合*/
+    if ($post["subnet"] == "") {
+        $err_msg = $msgarr['29001'][SCREEN_MSG];
+        $log_msg = $msgarr['29001'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*ネットマスクは入力しない場合*/
+    if ($post["netmask"] == "") {
+        $err_msg = $msgarr['29003'][SCREEN_MSG];
+        $log_msg = $msgarr['29003'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*許可文字種*/
+    $ret = check_format_ip($post["subnet"]);
+    if ($ret === FUNC_FALSE) {
+        $err_msg = $msgarr['29002'][SCREEN_MSG];
+        $log_msg = $msgarr['29002'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*許可文字種*/
+    $ret = check_format_ip($post["netmask"]);
+    if ($ret === FUNC_FALSE) {
+        $err_msg = $msgarr['29004'][SCREEN_MSG];
+        $log_msg = $msgarr['29004'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    return FUNC_TRUE;
+}
+
+/*********************************************************
+ * check_format_ip()
+ *
+ * フォーマットIPをチェックする関数
+ *
+ * [引数]
+ *      $ip                       入力する値
+ *
+ * [返り値]
+ *      FUNC_TRUE                 正常
+ *      FUNC_FALSE                異常
+ ********************************************************/
+function check_format_ip($ip)
+{
+    /* IPv6の場合の形式チェック */
+    if (STR_IP == 'v6') {
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) === FALSE) {
+            return FUNC_FALSE;
+        }
+        return FUNC_TRUE;
+    }
+
+    /* IPv4の場合の形式チェック */
+    /*分割した値を保存する配列*/
+    $arrar_ip = array();
+    $len = 0;
+
+    /*正規表現を設定する*/
+    $number = '[0-9]{1,3}';
+    $ipregular = '/^'. $number. '\.'. $number. '\.'. $number. '\.'. $number. '$/';
+
+    /*長さを判断*/
+    $len = strlen($ip);
+    if (($len < 7) || ($len > 15)) {
+        return FUNC_FALSE;
+    }
+
+    /*許可文字種*/
+    if (!preg_match($ipregular, $ip)) {
+        return FUNC_FALSE;
+    }
+
+    /*ドットでIPを分割する*/
+    $array_ip = explode(".", $ip);
+    /*255より大きいかどうか判断する*/
+    foreach ($array_ip as $number) {
+        /*255より大きい場合*/
+        if ($number > 255) {
+            return FUNC_FALSE;
+        }
+    }
+    return FUNC_TRUE;
+}
+
+/*********************************************************
+ * check_subnet_router()
+ *
+ * ルータの形式をチェックする関数
+ *
+ * [引数]
+ *      $router                   ルータ値
+ *
+ * [返り値]
+ *      FUNC_TRUE                 正常
+ *      FUNC_FALSE                異常
+ ********************************************************/
+function check_subnet_router($router)
+{
+    $len = strlen($router);
+
+    /*ルータの長さをチェックする*/
+    if ($len > 15 || $len < 7) {
+        return FUNC_FALSE;
+    }
+
+    /*ルータの形式をチェックする関数を呼び出す*/
+    $ret = check_format_ip($router);
+    /*返す値を判断する*/
+    if ($ret === FUNC_FALSE) {
+        return FUNC_FALSE;
+    }
+    /*FUNC_TRUEを返す*/
+    return FUNC_TRUE;
+}
+
+/*********************************************************
+ * check_subnet_dns()
+ *
+ * DNSアドレスの入力値をチェックする関数
+ *
+ * [引数]
+ *      $dns                      dnsサーバアドレス
+ *
+ * [返り値]
+ *      FUNC_TRUE                 正常
+ *      FUNC_FALSE                異常
+ ********************************************************/
+function check_subnet_dns($dns)
+{
+    /*dnsサーバのアドレスを保存する配列*/
+    $ip_array = array();
+    $new_ip_array = array();
+    /*dnsの長さ*/
+    $len = strlen($dns);
+
+    /*DNSサーバアドレスの長さをチェックする*/
+    if ($len > 159) {
+        return FUNC_FALSE;
+    }
+
+    /*「,」でdnsを分割する*/
+    $ip_array = explode(",", $dns);
+
+    /*10以上入力されていないかを確認*/
+    $num = count($ip_array);
+    if ($num > 10) {
+        return FUNC_FALSE;
+    }
+
+    /*同じIPアドレスが複数回設定されていないこと*/
+    $new_ip_array = array_unique($ip_array);
+    $new_num = count($new_ip_array);
+    if ($num != $new_num) {
+        return FUNC_FALSE;
+    }
+
+    /*文字種をチェックする*/
+    foreach ($ip_array as $ip) {
+        /*IPアドレスの形式チェック*/
+        $ret = check_format_ip($ip);
+        if ($ret === FUNC_FALSE) {
+            return FUNC_FALSE;
+        }
+    }
+
+    return FUNC_TRUE;
+}
+
+/*********************************************************
+ * check_subnet_leasetime()
+ *
+ * 標準リース時間かつ最大リース時間をチェックする関数
+ *
+ * [引数]
+ *      $leasetime                リース時間
+ *
+ * [返り値]
+ *      FUNC_TRUE                 正常
+ *      FUNC_FALSE                異常
+ ********************************************************/
+function check_subnet_leasetime($leasetime)
+{
+    /*正規表現を宣言する*/
+    $time_regular = '/^'. '[0-9]{1,}'. '$/';
+    $len = strlen($leasetime);
+
+    /*リース時間の長さをチェックする*/
+    if ($len > 8) {
+        return FUNC_FALSE;
+    }
+
+    /*正規表現を判断する*/
+    if (!preg_match($time_regular, $leasetime)) {
+        return FUNC_FALSE;
+   }
+    return FUNC_TRUE;
+
+}
+
+/*********************************************************
+ * check_subnet_option()
+ *
+ * Extraオプションをチェックする関数
+ *
+ * [引数]
+ *      $option                   extraオプション
+ *
+ * [返り値]
+ *      FUNC_TRUE                 正常
+ *      FUNC_FALSE                異常
+ ********************************************************/
+function check_subnet_option($option)
+{
+    $len = strlen($option);
+    /*リース時間の長さをチェックする*/
+    if ($len > 512) {
+        return FUNC_FALSE;
+    }
+    return FUNC_TRUE;
+}
+
+/*********************************************************
+ * check_update_subnet_data()
+ *
+ * Extraオプションをチェックする関数
+ *
+ * [引数]
+ *      $post                     $_POSTで渡される値
+ *
+ * [返り値]
+ *      FUNC_TRUE                 正常
+ *      FUNC_FALSE                異常
+ ********************************************************/
+function check_update_subnet_data($post)
+{
+    /*グロバール変数*/
+    global $msgarr;
+    global $err_msg;
+    global $log_msg;
+
+    $ret = FUNC_FALSE;
+
+    /*ルータは入力するかどうかをチェックする*/
+    if ($post["router"] == "") {
+        $err_msg = $msgarr['29008'][SCREEN_MSG];
+        $log_msg = $msgarr['29008'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*標準リース時間は入力するかどうかをチェックする*/
+    if ($post["leasetime"] == "") {
+        $err_msg = $msgarr['29011'][SCREEN_MSG];
+        $log_msg = $msgarr['29011'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*最大リース時間は入力するかどうかをチェックする*/
+    if ($post["maxleasetime"] == "") {
+        $err_msg = $msgarr['29013'][SCREEN_MSG];
+        $log_msg = $msgarr['29013'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*DNSサーバは入力するかどうかをチェックする*/
+    if ($post["dnsserver"] == "") {
+        $err_msg = $msgarr['29015'][SCREEN_MSG];
+        $log_msg = $msgarr['29015'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*ルータの形式をチェックする*/
+    $ret = check_subnet_router($post["router"]);
+    if ($ret === FUNC_FALSE) {
+        $err_msg = $msgarr['29009'][SCREEN_MSG];
+        $log_msg = $msgarr['29009'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*ドメイン名をチェックする*/
+    $ret = check_defdomain($post["domainname"]);
+    if ($ret === FALSE) {
+        $err_msg = $msgarr['29010'][SCREEN_MSG];
+        $log_msg = $msgarr['29010'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*標準リース時間の形式をチェックする*/
+    $ret = check_subnet_leasetime($post["leasetime"]);
+    if ($ret === FUNC_FALSE) {
+        $err_msg = $msgarr['29012'][SCREEN_MSG];
+        $log_msg = $msgarr['29012'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*最大リース時間の形式をチェックする*/
+    $ret = check_subnet_leasetime($post["maxleasetime"]);
+    if ($ret === FUNC_FALSE) {
+        $err_msg = $msgarr['29014'][SCREEN_MSG];
+        $log_msg = $msgarr['29014'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*DNSサーバアドレスのい方式をチェックする*/
+    $ret = check_subnet_dns($post["dnsserver"]);
+    if ($ret === FUNC_FALSE) {
+        $err_msg = $msgarr['29016'][SCREEN_MSG];
+        $log_msg = $msgarr['29016'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*Etraオプションをチェックする*/
+    $ret = check_subnet_option($post["exoption"]);
+    if ($ret === FUNC_FALSE) {
+        $err_msg = $msgarr['29017'][SCREEN_MSG];
+        $log_msg = $msgarr['29017'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+    return FUNC_TRUE;
+}
+
+/*********************************************************
+ * dgp_location_hidden()
+ *
+ * 値を渡す関数
+ *
+ * [引数]
+ *      $url                     url
+ *      $hiarray                 $_POSTで渡される配列
+ *
+ * [返り値]
+ *      なし                     正常
+ ********************************************************/
+
+function dgp_location_hidden($url, $hiarray = null)
+{
+    global $sesskey;
+
+    /* セッション */
+    $hidden = "<input type=\"hidden\" name=\"sk\" value=\"" .
+               $sesskey . "\">";
+
+    if (is_array($hiarray)) {
+        foreach ($hiarray as $key => $value) {
+            $hidden .= "\n" . "<input type=\"hidden\" name=\"$key\" " .
+                              "value=\"$value\">";
+        }
+    }
+
+    /* HTML作成 */
+    display_header();
+    print <<<EOD
+<script type="text/javascript">
+<!--
+function msgConfirm(msg) {
+        return(window.confirm(msg));
+}
+
+function dgpSubmit(url) {
+    document.common.action = url;
+    document.common.submit();
+}
+// -->
+</script>
+<body onload="dgpSubmit('$url')">
+処理中...
+<form method="post" name="common">
+    $hidden
+</form>
+</body>
+</html>
+EOD;
+    exit;
+
+}
+
+/*********************************************************
+ * check_same_name()
+ *
+ * 同名を探す関数
+ *
+ * [引数]
+ *      $session       比較するセッション
+ *      $shname        Shared-network名
+ *
+ * [返り値]
+ *      TRUE           同名あり
+ *      FALSE          同名なし
+ ********************************************************/
+
+function check_same_name($session, $shname)
+{
+    /* 同名チェック */
+    foreach ($session as $key => $value) {
+        if ($key != "_other" && $key != "_common") {
+            /* 重複が見つかった場合 */
+            if ($key == $shname) {
+            return TRUE;
+            }
+        }
+    }
+    return FALSE;
+}
+
+/*********************************************************
+ * re_display()
+ *
+ * サブネットを再表示する関数
+ *
+ * [引数]
+ *      $left          所属サブネット
+ *      $right         未所属サブネット
+ *
+ * [返り値]
+ *      なし
+ ********************************************************/
+
+function re_display($left, $right)
+{
+    global $tag;
+
+    if (is_array($left)) {
+        foreach ($left as $inshsubnet) {
+            $tag["<<SUBNET>>"] .= "<option value=\"$inshsubnet\">$inshsubnet</option>\n";
+        }
+    }
+
+    if (is_array($right)) {
+        foreach ($right as $othershsubnet) {
+            $tag["<<OTHERSUBNET>>"] .= "<option value=\"$othershsubnet\">$othershsubnet</option>\n";
+        }
+    }
+}
+
+
+/*********************************************************
+ * set_range_list()
+ *
+ * タグ範囲リスト情報セット関数
+ *
+ * [引数]
+ *      $range_data            入力された値
+ *
+ * [返り値]
+ *      $range_option          範囲リスト
+ ********************************************************/
+function set_range_list($range_data = array())
+{
+    /*初期化*/
+    $newrange = "";
+    $range_option = "";
+    /*最後まで繰り返す*/
+    foreach ($range_data  as $range) {
+        $exp_range = explode(",", $range);
+        $newrange = $exp_range[0] . " - " . $exp_range[1];
+        $range = escape_html($range);
+        /*オプションのタグに値ををセットする*/
+        $range_option = $range_option . "<option value=\"$range\" >" .
+                        $newrange . "</option> \n";
+    }
+    /*値を返す*/
+    return $range_option;
+}
+
+
+/*********************************************************
+ * get_list_range()
+ *
+ * セッションから範囲の情報を取得する関数
+ *
+ * [引数]
+ *      $range_data            取得する配列の範囲
+ *      $subnet                現在サブネット
+ *
+ * [返り値]
+ *      $FUNC_TRUE             正常
+ *      $FUNC_FALSE            異常
+ ********************************************************/
+function get_list_range(&$range_data, &$sn, $subnet)
+{
+    /*範囲の値を習得する*/
+    if (isset($_SESSION[STR_IP])) {
+        /*shared-networkかつ_other部分を取得する*/
+        foreach ($_SESSION[STR_IP] as $sn => $value1) {
+            if ($sn != STR_COMMON && is_array($_SESSION[STR_IP][$sn])) {
+               /*サブネットはセッションの中にる*/
+                foreach ($_SESSION[STR_IP][$sn] as $sub => $key) {
+                /*サブネットを存在した場合*/
+                    if ($subnet == $sub) {
+                        if (isset($_SESSION[STR_IP][$sn][$subnet]["range"]) &&
+                            $_SESSION[STR_IP][$sn][$subnet]["range"] != "") {
+                            $range_data =
+                     explode("\n", $_SESSION[STR_IP][$sn][$subnet]["range"]);
+                        } else {
+                            $range_data = array();
+                        }
+                        return FUNC_TRUE;
+                    }
+                }
+            }
+        }
+     }
+    return FUNC_FALSE;
+}
+
+/*********************************************************
+ * check_range_in_session()
+ *
+ * セッションの中に、範囲があるかどうかチェックする関数
+ *
+ * [引数]
+ *      $rangelist             範囲の配列
+ *      $range                 チェックしたい範囲
+ *
+ * [返り値]
+ *      FUNC_TRUE              正常
+ *      FUNC_FALSE             異常
+ ********************************************************/
+function check_range_in_session($rangelist, $range) {
+    /*範囲の値を習得する*/
+    foreach ($rangelist  as $rg) {
+        /*範囲を存在したら*/
+        if ($range == $rg) {
+            return FUNC_TRUE;
+        }       
+    }
+    return FUNC_FALSE;
+}
+
+/*********************************************************
+ * update_range_session()
+ *
+ * セッションに範囲の情報セット関数
+ *
+ * [引数]
+ *      $range_data            入力された値
+ *
+ * [返り値]
+ *      なし
+ ********************************************************/
+function update_range_session($range_data, $sn, $subnet)
+{
+    $range_update = "";
+    /*全て範囲を取得して繰り返す*/
+    foreach ($range_data as $range) {
+        if ($range_update == "") {
+            /*新規文字列を作成する*/
+            $range_update = $range;
+        } else {
+            /*範囲を追加する*/
+            $range_update .= "\n" . $range;
+        }
+    }
+    /*一つ範囲がある時、セッションをunsetします*/
+    if ($range_update == "") {
+        unset($_SESSION[STR_IP][$sn][$subnet]["range"]);
+    } else {
+        /*セッションに新規範囲を保存する*/
+        $_SESSION[STR_IP][$sn][$subnet]["range"] = $range_update;
+    }
+}
+
+/*********************************************************
+ * check_hostname()
+ *
+ * ホスト名の入力値チェック
+ *
+ * [引数]
+ *      $hostname    入力されたホスト名 
+ * [返り値]
+ *      TRUE         正常
+ *      FALSE        異常
+ **********************************************************/
+function check_hostname($hostname) 
+{
+    /* 文字数チェック */
+    /* hostnameに値があるか調べる */
+    if (isset($hostname) && $hostname != "") {
+        $length = strlen($hostname);
+        if ($length > MAX_HOSTNAME_LENGTH) {
+            return FALSE;
+        }
+
+        /* 半角英大小文字、数字、特定記号のみ許可 */
+        $num = "0123456789";
+        $sl = "abcdefghijklmnopqrstuvwxyz";
+        $ll = strtoupper($sl);
+        $sym = "!\"#$%&'()=-~^|@`[{;+:*]}<.>/?\\_";
+        $allow_letter = $num . $sl . $ll . $sym;
+        if (strspn($hostname, $allow_letter) != $length) {
+            return FALSE;
+        }
+    }
+    /*値がなかったらTRUE*/
+    return TRUE;
+}
+
+/*********************************************************
+ * check_search_in()
+ *
+ * クライアント設定画面入力値チェック
+ *
+ * [引数]
+ *      $hostname    入力されたホスト名
+ * [返り値]
+ *      0            正常
+ *      1            ホスト名エラー
+ *      2            MACアドレスエラー
+ *      3            IPアドレスエラー
+ **********************************************************/
+function check_search_in($hostname, $mac, $ip)
+{
+    /* hostnameチェック */
+    $ret = check_hostname($hostname);
+    if ($ret == FALSE) {
+        return 1;
+    }
+
+    /* IPv4, v6で処理をわける */
+    if (STR_IP == 'v4') {
+        /* macアドレス形式チェック */
+        $ret = check_mac($mac);
+        if ($ret == FALSE) {
+            return 2;
+        }
+    } elseif (STR_IP == 'v6') {
+        /* DUID形式チェック */
+        if (check_duid($mac) === FALSE) {
+            return 2;
+        }
+    }
+
+    /* IP形式チェック */
+    $ret = check_ip($ip);
+    if ($ret === FALSE) {
+        return 3;
+    }
+
+    return 0;
+}
+
+
+/*********************************************************
+ * check_duid()
+ *
+ * DUIDの入力の有無、文字数チェック、形式チェックを行う
+ *
+ * [引数]
+ *          $duid   チェックさせたいDUID
+ *
+ * [返り値]
+ *          TRUE    問題無し、または入力値なし
+ *          FALSE   問題あり
+ *********************************************************/
+function check_duid($duid)
+{
+    /* 入力がなければスルー */
+    if (isset($duid) === FALSE) {
+        return TRUE;
+    }
+    if ($duid == "") {
+        return TRUE;
+    }
+
+    /* 文字数チェック */
+    if (strlen($duid) > 128) {
+        return FALSE;
+    }
+
+    /* 形式チェック */
+    /* 0-Fの1桁or2桁が':'区切りで行頭から行末まで続くパターン */
+    $pattern = '/^([0-9a-fA-F]{1,2})(:[0-9a-fA-F]{1,2})*$/';
+    if (preg_match($pattern, $duid) === 0) {
+        return FALSE;
+    } 
+
+    return TRUE;
+}
+
+
+/*********************************************************
+ * check_ip()
+ *
+ * ipアドレスの入力値チェック
+ *
+ * [引数]
+ *      $ip        入力された値
+ * [返り値]
+ *      TRUE         正常
+ *      FALSE        異常
+ **********************************************************/
+function check_ip($ip)
+{
+    /* IPv6画面での処理 */
+    if (STR_IP == 'v6') {
+        if (!isset($ip) || $ip == "") {
+            return TRUE;
+        }
+        if (strlen($ip) > 39) {
+            return FALSE;
+        }
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) === FALSE) {
+            return FALSE;
+        } 
+        return TRUE;
+    }
+
+    /* IPv4 */
+    /* 文字数チェック */
+    /* ipに値があるか調べる */
+    if (isset($ip) && $ip != "") {
+        $length = strlen($ip);
+        if ($length > MAX_IP_LENGTH) {
+            return FALSE;
+        }
+
+        $num = "0123456789";
+        $sym = ".";
+        $allow_letter = $num . $sym;
+        if (strspn($ip, $allow_letter) != $length) {
+            return FALSE;
+        }
+
+        /*分析した値を保存する配列*/
+        $arrar_ip = array();
+
+        /*正規表現を設定する*/
+        $number = '[0-9]{1,}';
+        $ipregular = '/^' . $number . '\.' . $number . '\.' . $number . '\.' . $number . '$/';
+
+        /*許可文字種*/
+        if (!preg_match($ipregular, $ip)) {
+            return FALSE;
+        }
+
+        /*ドットでIPを分割する*/
+        $array_ip = explode(".", $ip);
+        /*255より大きいかどうか判断する*/
+        foreach ($array_ip as $number) {
+            /*255より大きい場合*/
+            if ($number > 255) {
+                return FALSE;
+            }
+        }
+        return TRUE;
+    }
+    /*値がなかったらTRUE*/
+    return TRUE;
+}
+
+/*********************************************************
+ * check_mac()
+ *
+ * macアドレスの入力値チェック
+ *
+ * [引数]
+ *      $mac        入力された値
+ * [返り値]
+ *      TRUE         正常
+ *      FALSE        異常
+ **********************************************************/
+function check_mac($mac)
+{
+    /* 文字数チェック */
+    /* macに値があるか調べる */
+    if (isset($mac) && $mac != "") {
+        $length = strlen($mac);
+        if ($length > MAX_MAC_LENGTH) {
+            return FALSE;
+        }
+        /* 入力された値に:があるか */
+        $ret = strpbrk($mac, ':');
+        if ($ret != FALSE) {
+            /* :があれば:で区切る */
+            $split = explode(":", $mac);
+            foreach ($split as $macsplit) {
+                /* 1桁または2桁でなければならない */
+                if (strlen($macsplit) > 2) {
+                    return FALSE;
+                }
+            }
+        }
+        /* 半角英大小文字(a~f)、数字、特定記号のみ許可 */
+        $num = "0123456789";
+        $sl = "abcdef";
+        $ll = strtoupper($sl);
+        $sym = ":.";
+        $allow_letter = $num . $sl . $ll . $sym;
+        if (strspn($mac, $allow_letter) != $length) {
+            return FALSE;
+        }
+    }
+    /*値がなかったらTRUE*/
+    return TRUE;
+}
+
+/*********************************************************
+ * client_re_display()
+ *
+ * 入力値を再表示する関数
+ *
+ * [引数]
+ *      $select        選択されたIP貸出設定
+ *      $host_match    選択されたホスト名の一致条件
+ *      $mac_match     選択されたIPアドレスの一致条件
+ *
+ * [返り値]
+ *      なし
+ ********************************************************/
+
+function client_re_display($select, $host_match, $mac_match)
+{
+    global $tag;
+
+    /* v4とv6の違いを吸収する */
+    $ident = STR_IP == "v4" ? "<<MAC_MATCH>>" : "<<DUID_MATCH>>";
+
+    /* ホスト名の一致条件 */
+    if ($host_match == "same") {
+$tag["<<HOST_MATCH>>"] = <<<END
+              <option value="same" selected>と一致する</option>
+              <option value="into">を含む</option>
+END;
+    } else {
+$tag["<<HOST_MATCH>>"] = <<<END
+              <option value="same">と一致する</option>
+              <option value="into" selected>を含む</option>
+END;
+    }
+
+    /* MACアドレス・DUIDの一致条件 */
+    if ($mac_match == "same") {
+$tag[$ident] = <<<END
+              <option value="same" selected>と一致する</option>
+              <option value="into">を含む</option>
+END;
+    } else {
+$tag[$ident] = <<<END
+              <option value="same">と一致する</option>
+              <option value="into" selected>を含む</option>
+END;
+    }
+
+    /* IP貸出設定 */
+    if ($select == "allow") {
+$tag["<<SEARCHLEASE>>"] = <<<END
+             <input type=radio name=ipselect value="allow" checked> 許可
+             <input type=radio name=ipselect value="deny"> 拒否
+             <input type=radio name=ipselect value="noselect"> 未選択
+END;
+    } else if ($select == "deny") {
+$tag["<<SEARCHLEASE>>"] = <<<END
+             <input type=radio name=ipselect value="allow"> 許可
+             <input type=radio name=ipselect value="deny" checked> 拒否
+             <input type=radio name=ipselect value="noselect"> 未選択
+END;
+    } else if ($select == "noselect") {
+$tag["<<SEARCHLEASE>>"] = <<<END
+             <input type=radio name=ipselect value="allow"> 許可
+             <input type=radio name=ipselect value="deny"> 拒否
+             <input type=radio name=ipselect value="noselect" checked> 未選択
+END;
+    }
+}
+
+
+/*********************************************************
+ * create_backup_file()
+ *
+ * バックアップファイルを作成する関数
+ *
+ * [引数]
+ *      $filebackup           バックアップ名
+ *      $pahtfile             バックアップファイル
+ *
+ * [返り値]
+ *      なし
+ ********************************************************/
+function create_back_file($pathfile, $backupfile)
+{
+
+    if (is_dir($backupfile)) {
+        return FUNC_FALSE;
+    }
+
+    if (file_exists($backupfile) && (!is_writable($backupfile))) {
+        return FUNC_FALSE;
+    }
+
+    $mtime = filemtime($pathfile);
+
+    /* コピーを作成する */
+    $ret = copy($pathfile, $backupfile);
+    /* 返値を判断する */
+    if ($ret !== TRUE) {
+        return FUNC_FALSE;
+    }
+
+    /* mtimeの変更 */
+    $ret = touch($backupfile, $mtime);
+    if ($ret !== TRUE) {
+        return FUNC_FALSE;
+    }
+
+    return FUNC_TRUE;
+}
+
+
+ /********************************************************
+ * create_tmp_file()
+ *
+ * dhcpd.confの一時ファイルを作成する関数
+ *
+ * [引数]
+ *      $pahtfile             作成したい一時ファイルのパス
+ *
+ * [返り値]
+ *      なし
+ ********************************************************/
+function create_tmp_file ($pathfile)
+{
+    $linehost = "";
+
+    if (is_dir($pathfile)) {
+        return FUNC_FALSE;
+    }
+
+    if (file_exists($pathfile) && (!is_writable($pathfile))) {
+        return FUNC_FALSE;
+    }
+
+    /* 一時ファイルを開く */
+    $tmpFile  = fopen($pathfile, "w");
+    if ($tmpFile === FALSE) {
+        return FUNC_FALSE;
+    }
+
+    /* 共通部分を作成 */
+    if (isset($_SESSION[STR_IP][STR_COMMON])) {
+        $ret = fwrite($tmpFile, $_SESSION[STR_IP][STR_COMMON]);
+        /* 書く時、エラーが発生したら */
+        if (!$ret) {
+            /* ファイルを閉める */
+            fclose($tmpFile);
+            return FUNC_FALSE;
+        }
+    }
+
+    /* サブネットを作成する */
+    $ret = create_subnet($tmpFile);
+    /* 返す値を判断する */
+    if ($ret === FUNC_FALSE) {
+        /* ファイルを閉める */
+        fclose($tmpFile);
+        return FUNC_FALSE;
+    }
+
+    /* shared-networkを作成する */
+    $ret = create_shared_network($tmpFile, "sn");
+    /* 返す値を判断する */
+    if ($ret === FUNC_FALSE) {
+        /* ファイルを閉める */
+        fclose($tmpFile);
+        return FUNC_FALSE;
+    }
+    /* ファイルを閉める */
+    fclose($tmpFile);
+
+    return FUNC_TRUE;
+
+}
+
+
+
+/*********************************************************
+ * create_linesubnet()
+ *
+ * 一時ファイルにサブネット部分を書き込む関数
+ *
+ * [引数]
+ *      $allsubnet           サブネットを保存する配列
+ *      $tmpFile             一時ファイル
+ *
+ * [返り値]
+ *      FUNC_TRUE            正常
+ *      FUNC_FALSE           異常
+ ********************************************************/
+function create_linesubnet($allsubnet, $tmpFile, $type = NULL)
+{
+    /* パラーメタの固定値 */
+    $properties = array ( STR_ROUTER => "router",
+                          STR_LEASETIME => "leasetime",
+                          STR_MAXLEASETIME => "maxleasetime",
+                          STR_DOMAIN => "domain",
+                          STR_DNS => "dns",
+                          STR_OPTION => "option"
+                        );
+    $linehost = "";
+    $space_subnet = "";
+    $space_item   = "    ";
+    $space_phost  = "        ";
+    if ($type == "sn") {
+        $space_subnet = "    ";
+        $space_item   = "        ";
+        $space_phost  = "            ";
+    }
+
+    /* v4とv6で書き込む内容を変える */
+    /* サブネット部分を作成する */
+    foreach ($allsubnet as $subnet_netmask => $value) {
+        if (STR_IP == "v4") {
+            /* サブネットは「/」区切りで格納されている */
+            $array_subnet = explode("/", $subnet_netmask);
+            /* サブネット行を作成する */
+            $subnetline = $space_subnet . STR_SUBNET . " " . $array_subnet[0] .
+                          " netmask " . $array_subnet[1] . " {\n";
+        } else if (STR_IP == "v6") {
+            /* サブネットは"IP/マスク"の形式で格納されている */
+            $subnetline = $space_subnet . STR_SUBNET . " " . $subnet_netmask .
+                          " {\n";
+        }
+        /* サブネット行を書き込む */
+        $ret = fwrite($tmpFile, $subnetline);
+        if (!$ret) {
+            return FUNC_FALSE;
+        }
+
+        /* rangeが存在するかどうかをチェックする */
+        if (isset($allsubnet[$subnet_netmask]["range"])) {
+            /* 範囲行を作成する */
+            $array_range = explode("\n", $allsubnet[$subnet_netmask]["range"]);
+            foreach ($array_range as $range) {
+                if ($range != "") {
+                    $arr_ip = explode(",", $range);
+                    /* 範囲行を作成する */
+                    $bootp = (STR_IP == 'v4') ? " dynamic-bootp " : " ";
+                    $linerange = $space_item . STR_RANGE . $bootp .
+                                 $arr_ip[0] . " " . $arr_ip[1] . ";\n";
+                    /* 一時ファイルに範囲を書き込む */
+                    $ret = fwrite($tmpFile, $linerange);
+                    if (!$ret) {
+                        return FUNC_FALSE;
+                    }
+                }
+            }
+        }
+
+        /* 設定が存在すればファイルに書き込む */
+        foreach ($properties as $key => $value) {
+            if (isset($allsubnet[$subnet_netmask][$value])) {
+                /* 新行を作成する */
+                if ($allsubnet[$subnet_netmask][$value] != "") {
+                    /* ドメインの場合 */
+                    if ($key === "option domain-name" || $key === "option dhcp6.domain-search") {
+                        /* 入力値が存在する場合、設定値を""で囲む */
+                        if ($allsubnet[$subnet_netmask][$value] !== "") {
+                            $newline = $space_item . $key . " \"" . 
+                                       $allsubnet[$subnet_netmask][$value] . "\";\n";
+                        }
+                    /* オプションの場合 */
+                    } else if ($key === "option"){
+                        $options = trim($allsubnet[$subnet_netmask][$value]);
+                        $options = preg_replace("/\n\s+/", "\n", $options);
+                        $options = preg_replace("/\n/", "\n$space_item", $options);
+                        $newline = $space_item. $options . "\n";
+                    /* ドメイン以外の場合 */
+                    } else {
+                        $newline = $space_item . $key . " " . 
+                                   $allsubnet[$subnet_netmask][$value] . ";\n";
+                    }
+                    /* 一時ファイルに情報を書く */
+                    $ret = fwrite($tmpFile, $newline);
+                    if (!$ret) {
+                        return FUNC_FALSE;
+                    }
+                }
+            }
+        }
+
+        /* クライアントを存在するかどうかをチェックする */
+        if (isset($allsubnet[$subnet_netmask]["host"])) {
+            /* 「\n」でクライアント情報を分割する */
+            $array_host = explode("\n", $allsubnet[$subnet_netmask]["host"]);
+            foreach ($array_host as $host) {
+                if ($host != "") {
+                    $array_param = explode(",", $host);
+                    /* 独立ホストを作成する */
+                    if ($array_param[0] != "") {
+                        /* クライアントを書き込む */
+                        $ret = fwrite($tmpFile, $space_item . "host " .
+                                      $array_param[0] .  " {\n");
+                        if (!$ret) {
+                            return FUNC_FALSE;
+                        }
+                        /* hardware mac */
+                        if (isset($array_param[1]) && $array_param[1] != "") {
+                            $lineparam = $space_phost . STR_HARDWARE . " " .
+                                         $array_param[1] . ";\n";
+                            fwrite($tmpFile, $lineparam);
+                            if (!$ret) {
+                                return FUNC_FALSE;
+                            }
+                        }
+
+                        /* IPアドレス */
+                        if (isset($array_param[2]) && $array_param[2] != "") {
+                            $lineparam = $space_phost . STR_FIXEDADDR . " " .
+                                         $array_param[2] . ";\n";
+                            fwrite($tmpFile, $lineparam);
+                            if (!$ret) {
+                                return FUNC_FALSE;
+                            }
+                            if (!$ret) {
+                                return FUNC_FALSE;
+                            }
+                        }
+
+                        /* ホスト名 */
+                        if (isset($array_param[3]) && $array_param[3] != "") {
+                            $lineparam =  $space_phost . STR_HOSTNAME . " " .
+                                          $array_param[3] . ";\n";
+                            $ret = fwrite($tmpFile, $lineparam);
+                            if (!$ret) {
+                                return FUNC_FALSE;
+                            }
+                        }
+
+                        /* allow/deny */
+                        if (isset($array_param[4]) && $array_param[4] != "") {
+                            $lineparam = $space_phost . $array_param[4] . " " .
+                                         STR_BOOT . ";\n";
+                            fwrite($tmpFile, $lineparam);
+                            if (!$ret) {
+                                return FUNC_FALSE;
+                            }
+                        }
+
+                        /* クライアントの「}」を書き込む */
+                        $ret = fwrite($tmpFile, $space_item . "}\n");
+                        if (!$ret) {
+                            return FUNC_FALSE;
+                        }
+                    }
+                }
+            }
+        }
+
+        /* サブネットの「}」 */
+        $ret = fwrite($tmpFile, $space_subnet . "}\n");
+        if (!$ret) {
+            return FUNC_FALSE;
+        }
+    }
+    return FUNC_TRUE;
+}
+                               
+
+
+/*********************************************************
+ * create_subnet()
+ *
+ * サブネット部分を一時ファイルに書き出す関数
+ *
+ * [引数]
+ *      $tmpFile             一時ファイル
+ *
+ * [返り値]
+ *      FUNC_TRUE            正常
+ *      FUNC_FALSE           異常
+ ********************************************************/
+function create_subnet($tmpfile)
+{
+    /*サブネットを存在するかどうかを判断する*/
+    if (isset($_SESSION[STR_IP][STR_OTHER]) &&
+       is_array($_SESSION[STR_IP][STR_OTHER])) {
+        /*一時ファイルにサブネットを書き込む関数を呼び出す*/
+        $ret = create_linesubnet($_SESSION[STR_IP][STR_OTHER], $tmpfile);
+        /*返す値を判断する*/
+        if ($ret === FUNC_FALSE) {
+            return FUNC_FALSE;
+        }
+    }
+    return FUNC_TRUE;
+}
+
+/*********************************************************
+ * create_shared_network()
+ *
+ * shared-network部分を取得する関数
+ *
+ * [引数]
+ *      $tmpFile             一時ファイル
+ *
+ * [返り値]
+ *      FUNC_TRUE            正常
+ *      FUNC_FALSE           異常
+ ********************************************************/
+function create_shared_network($tmpfile)
+{
+     if (isset($_SESSION[STR_IP]) && is_array($_SESSION[STR_IP])) {
+        /*サブネット配列を作成する*/
+        foreach ($_SESSION[STR_IP] as $sn => $subnet) {
+            if ( ($sn != STR_OTHER) && ($sn != STR_COMMON)) {
+                /*shared-network行を作成する*/
+                $linesn = "shared-network " . $sn . " {\n";
+                $ret = fwrite($tmpfile, $linesn);
+                if (!$ret) {
+                    return FUNC_FALSE;
+                }
+                if (count($_SESSION[STR_IP][$sn]) != 0) {
+                    /*一時ファイルにサブネットを書き込む関数を呼び出す*/
+                    $ret = create_linesubnet($_SESSION[STR_IP][$sn], $tmpfile, "sn");
+                    /*返す値を判断する*/
+                    if ($ret === FUNC_FALSE) {
+                        return FUNC_FALSE;
+                    }
+                }
+
+                /*一時ファイルに「}」を書き込む*/
+                $ret = fwrite($tmpfile, "}\n");
+                if ($ret === FUNC_FALSE) {
+                    return FUNC_FALSE;
+                }
+            }
+        }
+    }
+    return FUNC_TRUE;
+}
+
+
+/*********************************************************
+ * overwrite_setting_file()
+ *
+ * 設定ファイルを上書きする関数
+ *
+ * [引数]
+ *      $tmpFile             一時ファイル
+ *      $settingfile         設定ファイル
+ *
+ * [返り値]
+ *      FUNC_TRUE            正常
+ *      FUNC_FALSE           異常
+ ********************************************************/
+function overwrite_setting_file($tmpfile, $settingfile)
+{
+
+    /*コマンドを実行する*/
+    $ret = rename($tmpfile, $settingfile);
+
+    if ($ret === FALSE) {
+        return FUNC_FALSE;
+    }
+    return FUNC_TRUE;
+}
+
+
+
+/*********************************************************
+ * run_command()
+ *
+ * コマンドを実行する 関数
+ *
+ * [引数]
+ *      $cmd                 実行コマンド
+ *
+ * [返り値]
+ *      FUNC_TRUE            正常
+ *      FUNC_FALSE           異常
+ ********************************************************/
+function run_command($cmd)
+{
+    $output = "";
+    /*コマンドを実行する*/
+    exec($cmd, $output, $ret);
+    if ($ret == 0) {
+        return FUNC_TRUE;
+    }
+    return FUNC_FALSE;
+}
+
+
+/*********************************************************
+ * restart_service()
+ *
+ * dhcpdサービスを再起動する関数
+ *
+ * [引数]
+ *      $cmd                 実行コマンド
+ *
+ * [返り値]
+ *      FUNC_TRUE            正常
+ *      FUNC_FALSE           異常
+ ********************************************************/
+function restart_service($cmd)
+{
+     $output = "";
+     /*コマンドを実行する*/
+     exec($cmd, $output, $ret);
+
+     if ($ret == 0) {
+          return FUNC_TRUE;
+     }
+     return FUNC_FALSE;
+}
+
+/***********************************************************
+ * dhcpadmin_login_check
+ *
+ * 二重ログインのチェックを行う
+ *
+ * [引数]
+ *        なし
+ *
+ * [返り値]
+ *        FUNC_TRUE           正常
+ *        FUNC_FALSE          エラー
+ *        LOCK_FALSE          二重ログイン
+ *
+ **********************************************************/
+function dhcpadmin_login_check(&$lock_file)
+{
+    global $domain;
+    global $basedir;
+
+    /* ロックファイルのパスを定義 */
+    $lock_file = $basedir .  VARDIR . $domain . '/' . LOCKFILE;
+
+    /* tmpファイルのパスを定義 */
+    $tmp_file = $basedir .  VARDIR . $domain . '/' . LOCKFILE . '.' . getmypid();
+
+    /* ロックファイルの存在確認 */
+    if (file_exists($lock_file)) {
+
+        /* 二重ログインになっていないかチェック */
+        $ret = dhcpadmin_check_lockfile($lock_file);
+        if ($ret !== FUNC_TRUE) {
+            return $ret;
+        }
+    }
+
+    /* ロックファイルの作成 */
+    $ret = dhcpadmin_make_lockfile($lock_file, $tmp_file);
+    if ($ret === FALSE) {
+        return FUNC_FALSE;
+    }
+
+    return FUNC_TRUE;
+}
+
+/***********************************************************
+ * dhcpadmin_make_lockfile
+ *
+ * ロックファイルの作成
+ *
+ * [引数]
+ *        $lock_file     ロックファイルのパス 
+ *        $lock_file     一時ファイルのパス 
+ *
+ * [返り値]
+ *        TRUE           正常
+ *        FALSE          エラー
+ *
+ **********************************************************/
+function dhcpadmin_make_lockfile($lock_file, $tmp_file)
+{
+    global $env;
+
+    /* ログイン情報を作成 */
+    $data = $env['loginuser'] . "\t" . $_SERVER["REMOTE_ADDR"] . "\t" . time();
+
+    /* 一時ファイルをオープン */
+    $tmp_fp = fopen($tmp_file, "w");
+    if ($tmp_fp === FALSE) {
+        return FALSE;
+    }
+
+    /* 一時ファイルに書き込み */
+    $ret = fwrite($tmp_fp, $data);
+    fclose($tmp_fp);
+    if ($ret === FALSE) {
+        unlink($tmp_file);
+        return FALSE;
+    }
+
+    /* ロックファイルに置き換え */
+    $ret = rename($tmp_file, $lock_file);
+    if ($ret === FALSE) {
+        unlink($tmp_file);
+        return FUNC_FALSE;
+    }
+
+    return TRUE;
+}
+
+/***********************************************************
+ * dhcpadmin_check_lockfile
+ *
+ * ロックファイルの内容チェック
+ *
+ * [引数]
+ *        $lock_file     ロックファイルのパス
+ *
+ * [返り値]
+ *        FUNC_TRUE           正常
+ *        FUNC_FALSE          エラー
+ *        LOCK_FALSE          二重ログイン
+ *
+ **********************************************************/
+function dhcpadmin_check_lockfile($lock_file)
+{
+    global $web_conf;
+    global $env;
+
+    /* ロックファイルの読み込み */
+    $ret = dhcpadmin_read_lockfile($lock_file, $filedata);
+    if ($ret === FALSE) {
+        return FUNC_FALSE;
+    }
+
+    $lock_time = $web_conf["dhcpadmin"]["locktime"] + $filedata[2];
+
+    /* ロックファイルを破棄してもよいかチェック */
+    if (time() < $lock_time) {
+
+        /* ログインしているユーザが存在しない場合 */
+        if (!isset($env['loginuser'])) {
+            return LOCK_FALSE;
+        }
+
+        /* ユーザ名,IPアドレスチェック */
+        if (($filedata[0] != $env['loginuser']) || ($filedata[1] != $_SERVER["REMOTE_ADDR"])) {
+            return LOCK_FALSE;
+        }
+    }
+
+    return FUNC_TRUE;
+}
+
+/***********************************************************
+ * dhcpadmin_del_lockfile
+ *
+ * ロックファイルの削除
+ *
+ * [引数]
+ *        なし
+ *
+ * [返り値]
+ *        TRUE           正常
+ *        FALSE          エラー
+ *
+ **********************************************************/
+function dhcpadmin_del_lockfile()
+{
+    global $domain;
+    global $basedir;
+    global $env;
+
+    /* ロックファイルのパス作成 */
+    $lock_file = $basedir . VARDIR . $domain . '/' . LOCKFILE;
+
+    /* ロックファイルの読み込み */
+    $ret = dhcpadmin_read_lockfile($lock_file, $filedata);
+    if ($ret === FALSE) {
+        return FUNC_FALSE;
+    }
+
+    /* ユーザ名,IPアドレスチェック */
+    if (($filedata[0] != $env['loginuser']) || ($filedata[1] != $_SERVER["REMOTE_ADDR"])) {
+        return LOCK_FALSE;
+    }
+
+    /* ファイルの削除 */
+    $ret = unlink($lock_file);
+    if ($ret === FALSE) {
+        return LOCK_FALSE;
+    }
+
+    return FUNC_TRUE; 
+}
+
+/***********************************************************
+ * dhcpadmin_read_lockfile
+ *
+ * ロックファイルの内容読み込み
+ *
+ * [引数]
+ *        $lock_file     ロックファイルのパス
+ *
+ * [返り値]
+ *        TRUE           正常
+ *        FALSE          エラー
+ *
+ **********************************************************/
+function dhcpadmin_read_lockfile($lock_file, &$filedata)
+{
+    /* ファイルをオープン */
+    $fp = fopen($lock_file, "r");
+    if ($fp === FALSE) {
+        return FALSE;
+    }
+
+    /* ファイル読み込み */
+    $buffer = fgets($fp);
+    fclose($fp);
+    if ($buffer === FALSE) {
+        return FALSE;
+    }
+
+    $filedata = explode("\t", $buffer, 3);
+    if ($filedata === FALSE) {
+        return FALSE;
+    } elseif (!isset($filedata[2])) {
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/***********************************************************
+ * check_add_range
+ *
+ * 範囲の入力をチェックする関数
+ *
+ * [引数]
+ *        $startrange     範囲(前)
+ *        $endrange       範囲(後)
+ *
+ * [返り値]
+ *        TRUE           正常
+ *        FALSE          エラー
+ *
+ **********************************************************/
+function check_add_range($startrange, $endrange)
+{
+    global $msgarr;
+    global $err_msg;
+    global $log_msg;
+
+    /*範囲(前)入力するかどうかをチェックする*/
+    if ($startrange == "") {
+        $err_msg = $msgarr['31001'][SCREEN_MSG];
+        $log_msg = $msgarr['31001'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*範囲(後)入力するかどうかをチェックする*/
+    if ($endrange == "") {
+        $err_msg = $msgarr['31002'][SCREEN_MSG];
+        $log_msg = $msgarr['31002'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*範囲(前)を種別をチェックする*/
+    $ret = check_format_ip($startrange);
+    if ($ret === FUNC_FALSE) {
+        $err_msg = $msgarr['31003'][SCREEN_MSG];
+        $log_msg = $msgarr['31003'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*範囲(後)種別をチェックする*/
+    $ret = check_format_ip($endrange);
+    if ($ret === FUNC_FALSE) {
+        $err_msg = $msgarr['31004'][SCREEN_MSG];
+        $log_msg = $msgarr['31004'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    return FUNC_TRUE;
+}
+
+/***********************************************************
+ * check_duplicate_range
+ *
+ * 範囲の重複をチェックするする関数
+ *
+ * [引数]
+ *        $sn             shared-networkとか_other
+ *        $subnet         サブネット
+ *        $startrange     範囲(前)
+ *        $endrange       範囲(後)
+ *
+ * [返り値]
+ *        TRUE            正常
+ *        FALSE           エラー
+ *
+ **********************************************************/
+
+function check_duplicate_range($sn, $subnet, $startrange, $endrange, $oldrange = "")
+{
+
+    global $msgarr;
+    global $err_msg;
+    global $log_msg;
+
+    $range_data = array();
+    $arr_ip = array();
+    $arr_sub = array();
+    $arr_subnet = array();
+    $arr_ip = array();
+    $arr_start = array();
+    $arr_end = array();
+
+    $dup_range = $startrange . "," . $endrange;
+    /*サブネットを分割*/
+    $arr_sub = explode(".", $subnet);
+    $arr_start = explode(".", $startrange);
+    $arr_end = explode(".", $endrange);
+    $arr_ip = explode("/", $subnet);
+
+    $bcast = ip2long($arr_ip[0]);
+    $nmask = ip2long($arr_ip[1]);
+
+    /*範囲前*/
+    $ret = ipcompare($startrange, $arr_ip[0], $arr_ip[1]);
+    if ($ret == FALSE) {
+        $err_msg = sprintf($msgarr['31007'][SCREEN_MSG], $dup_range);
+        $log_msg = sprintf($msgarr['31007'][LOG_MSG], $dup_range);
+        return FUNC_FALSE;
+    }
+
+    /*範囲前*/
+    $ret = ipcompare($endrange, $arr_ip[0], $arr_ip[1]);
+    if ($ret == FALSE) {
+        $err_msg = sprintf($msgarr['31007'][SCREEN_MSG], $dup_range);
+        $log_msg = sprintf($msgarr['31007'][LOG_MSG], $dup_range);
+        return FUNC_FALSE;
+    }
+
+    /*範囲(前)と範囲(後)を比較*/
+    $ret = strcmp(inet_pton($startrange), inet_pton($endrange));
+    if ($ret >= 0) {
+        $err_msg = sprintf($msgarr['31008'][SCREEN_MSG], $dup_range);
+        $log_msg = sprintf($msgarr['31008'][LOG_MSG], $dup_range);
+        return FUNC_FALSE;
+    }
+
+    /*全て範囲を取得する*/
+    $ret = get_list_range($range_data, $sn, $subnet);
+    if ($ret === FUNC_FALSE) {
+        $err_msg = sprintf($msgarr['31005'][SCREEN_MSG], $dup_range);
+        $log_msg = sprintf($msgarr['31005'][LOG_MSG], $dup_range);
+        return FUNC_FALSE;
+    }
+
+    /*変更の場合、変更したい範囲を削除*/
+    if ($oldrange != "") {
+        /*範囲配列のoldsubnetをunset*/
+        $key = array_search($oldrange, $range_data);
+        if ($key !== FALSE) {
+            unset($range_data[$key]);
+        }
+    }
+
+    /*ループ*/
+    foreach ($range_data as $linerange) {
+        /*「,」を範囲を分割する*/
+        $arr_ip = explode(",", $linerange);
+        $ret1 = strcmp(inet_pton($startrange), inet_pton($arr_ip[1]));
+        $ret2 = strcmp(inet_pton($endrange), inet_pton($arr_ip[0]));
+        if (!(($ret1 > 0) || ($ret2 < 0))) {
+            $err_msg = sprintf($msgarr['31006'][SCREEN_MSG], $dup_range);
+            $log_msg = sprintf($msgarr['31006'][LOG_MSG], $dup_range);
+            return FUNC_FALSE;
+        }
+    }
+    return FUNC_TRUE;
+}
+
+
+function ipcompare ($ip1, $ip2, $mask) {
+    $masked1 = ip2long($ip1) & ip2long($mask);
+    $masked2 = ip2long($ip2) & ip2long($mask);
+    if ($masked1 == $masked2) {
+        return true;
+    }
+    return false;
+}
+
+
+/***********************************************************
+ * check_delete_range()
+ * 範囲の中に、hostが含めるかどうかをチェックする
+ *
+ *
+ * [引数]
+ *      $host       クライアントの文字配列値
+ *      $range      範囲を選択した
+ *
+ * [返り値]
+ *        FUNC_TRUE            正常
+ *        FUNC_FALSE           エラー
+ *
+ ***********************************************************/
+function check_delete_range($hoststr, $range) { 
+    /* クライアントの分析*/
+    $host_array = explode("\n", $hoststr);
+    list($lower, $upper) = explode(',', $range, 2);
+
+    $lower_dec = inet_pton($lower);
+    $upper_dec = inet_pton($upper);
+
+    foreach ($host_array as $host) {
+        $list_item = explode(",", $host);
+        if (isset($list_item[2])) {
+            if ($list_item[2] != "") {
+                $ip = $list_item[2];
+                $ip_dec = inet_pton($ip);
+                if ( ($ip_dec >= $lower_dec) && ($ip_dec <= $upper_dec) ) {
+                    return FALSE;
+                }
+            }
+        }
+    }
+    return TRUE;
+}
+
+
+
+/***********************************************************
+ * check_duplicate_v6range()
+ *
+ * 範囲設定編集画面で呼び出される。
+ * 入力された範囲がサブネットに収まっているかどうか、
+ * 範囲(前)と(後)の大小関係は適切かどうか、
+ * 他の範囲設定とかぶっていないかをチェックする。
+ *
+ * 更新処理の場合、変更前のデータの削除もこの関数内で行う。
+ *
+ * [引数]
+ *      $sn         shared-networkの名前
+ *      $subnet     サブネットのIP/mask
+ *      $startrange 入力された範囲(前)
+ *      $endrange   入力された範囲(後)
+ *      $oldrange   更新処理の場合、更新元の範囲
+ *
+ * [返り値]
+ *        FUNC_TRUE            正常
+ *        FUNC_FALSE           エラー
+ *
+ ***********************************************************/
+function check_duplicate_v6range ($sn, $subnet, $startrange, $endrange, $oldrange = "")
+{
+    /* エラーメッセージ出力用 */
+    global $msgarr, $err_msg, $log_msg;
+    $dup_range = $startrange . "," . $endrange;
+
+    /************************
+     * 入力値がサブネット範囲内にあるかどうかのチェック
+     ************************/
+    /* IP部分とマスク部分に分割 */
+    list($net, $mask) = explode("/", $subnet);
+    /* マスク値(32とか64とか)をバイトに変換 */
+    $binMask = masktobyte($mask);
+    /* IPアドレスをバイトに変換 */
+    $maskNet = inet_pton($net) & $binMask; // 論理積をとることでマスクをかける
+    $sRange = inet_pton($startrange); // 後に使用するので今はマスクしない
+    $eRange = inet_pton($endrange);
+
+    /* 範囲開始アドレスと終端アドレスにマスクをかけ、それが$netと一致すれば
+       サブネット内に含まれている */
+    if ($maskNet != ($sRange & $binMask) || $maskNet != ($eRange & $binMask)) {
+        $err_msg = sprintf($msgarr['31007'][SCREEN_MSG], $dup_range);
+        $log_msg = sprintf($msgarr['31007'][LOG_MSG], $dup_range);
+        return FUNC_FALSE; 
+    }
+
+    /* 入力値の前後の大小関係のチェック */
+    if ($sRange > $eRange) {
+        $err_msg = sprintf($msgarr['31008'][SCREEN_MSG], $dup_range);
+        $log_msg = sprintf($msgarr['31008'][LOG_MSG], $dup_range);
+        return FUNC_FALSE;
+    }
+
+    /* $subnetに含まれる全ての範囲を取得し、$range_dataに格納する */
+    $ret = get_list_range($range_data, $sn, $subnet);
+    if ($ret === FUNC_FALSE) {
+        $err_msg = sprintf($msgarr['31005'][SCREEN_MSG], $dup_range);
+        $log_msg = sprintf($msgarr['31005'][LOG_MSG], $dup_range);
+        return FUNC_FALSE;
+    }
+
+    /* 更新の場合、元々の範囲を削除 */
+    if ($oldrange != "") {
+        /* 範囲配列のoldsubnetをunset */
+        $key = array_search($oldrange, $range_data);
+        if ($key !== FALSE) {
+            unset($range_data[$key]);
+        }
+    }
+
+    /* 登録済みの他のレンジ設定と重複がないかをチェック */
+    foreach ($range_data as $linerange) {
+        /* (開始,終了)の形で格納されている */
+        $arr_ip = explode(",", $linerange);
+        $head = inet_pton($arr_ip[0]);
+        $tail = inet_pton($arr_ip[1]);
+        /* 重複チェック。(eRange < head || tail < sRange)の否定をとる。
+         * sRange < eRange はこの時点で既に保証されている */
+        if ($eRange >= $head && $tail >= $sRange) {
+            $err_msg = sprintf($msgarr['31006'][SCREEN_MSG], $dup_range);
+            $log_msg = sprintf($msgarr['31006'][LOG_MSG], $dup_range);
+            return FUNC_FALSE;
+        }
+    }
+
+    return FUNC_TRUE;
+}
+
+/***********************************************************
+ * masktobyte()
+ *
+ * 指定されたサブネットマスクから、inet_pton()で生成されるものと同様の形式の
+ * バイナリデータを作成する。
+ *
+ * [引数]
+ *      $mask       サブネットマスク(0~128)
+ *
+ * [返り値]
+ *      $binMask    バイナリ形式に変換されたマスク
+ ***********************************************************/
+function masktobyte($mask)
+{
+    /* マスクを32桁の16進数で表現する */
+    /* まずfを並べる */
+    $binMask = str_repeat('f', $mask / 4);
+    /* fじゃないものを加える */
+    switch ($mask % 4) {
+        case 1:
+            $binMask .= "8";
+            break;
+        case 2:
+            $binMask .= "c";
+            break;
+        case 3:
+            $binMask .= "e";
+            break;
+    }
+    /* 桁を埋める */
+    $binMask = str_pad($binMask, 32, '0');
+    /* 16進数フォーマット(H*)でバイナリ文字列にパックする */
+    $binMask = pack("H*", $binMask);
+
+    return $binMask;
+}
+
+
+/***********************************************************
+ * mod_range_session
+ *
+ * 範囲を更新するする関数
+ *
+ * [引数]
+ *        $sn             shared-networkとか_other
+ *        $subnet         サブネット
+ *        $old_range      元範囲
+ *        $startrange     範囲(前)
+ *        $endrange       範囲(後)
+ *
+ * [返り値]
+ *        TRUE           正常
+ *        FALSE          エラー
+ *
+ **********************************************************/
+function mod_range_session($sn, $subnet, $startrange, $endrange, $old_range)
+{
+    global $msgarr;
+    global $err_msg;
+    global $log_msg;
+
+    /* 変数を宣言する */
+    $str_new_range = "";
+    $str_old_range = "";
+    $new_range = "";
+    /* 範囲を存在した場合 */
+    if ($_SESSION[STR_IP][$sn][$subnet]["range"]) {
+         $str_old_range = $_SESSION[STR_IP][$sn][$subnet]["range"];
+         /* 新範囲を作成 */
+         $new_range = $startrange . "," . $endrange;
+         /* 古い範囲を作成 */
+         $old_range = str_replace(" - ", ",", $old_range);
+         $str_new_range = str_replace($old_range, $new_range, $str_old_range,
+                                      $count);
+        /* dhcpd.confが既に書き換わっていた場合 */
+        if ($count != 1) {
+            $err_msg = sprintf($msgarr['31005'][SCREEN_MSG], $old_range);
+            $log_msg = sprintf($msgarr['31005'][LOG_MSG], $old_range);
+            return FUNC_FALSE;
+        }
+        /* セッションの範囲を更新する */
+        $_SESSION[STR_IP][$sn][$subnet]["range"] = $str_new_range;
+        return FUNC_TRUE;
+    }
+    $err_msg = sprintf($msgarr['31005'][SCREEN_MSG], $old_range);
+    $log_msg = sprintf($msgarr['31005'][LOG_MSG], $old_range);
+    return FUNC_FALSE;
+}
+
+
+
+/***********************************************************
+ * add_range_session()
+ *
+ * 範囲を登録する関数
+ *
+ * [引数]
+ *        $sn             shared-networkとか_other
+ *        $subnet         サブネット
+ *        $startrange     範囲(前)
+ *        $endrange       範囲(後)
+ *
+ * [返り値]
+ *        TRUE           正常
+ *        FALSE          エラー
+ *
+ **********************************************************/
+function add_range_session($sn, $subnet, $startrange, $endrange)
+{
+
+    global $msgarr;
+    global $err_msg;
+    global $log_msg;
+
+    /*新範囲を作成する*/
+    $new_range = $startrange . "," .$endrange;
+    if (isset($_SESSION[STR_IP][$sn][$subnet]["range"]) &&
+        $_SESSION[STR_IP][$sn][$subnet]["range"] != "") {
+         /*セッションに範囲を追加する*/
+         $_SESSION[STR_IP][$sn][$subnet]["range"] .= "\n" . $new_range;
+    } else {
+         $_SESSION[STR_IP][$sn][$subnet]["range"] = $new_range;
+    }
+
+    return FUNC_TRUE;
+}
+
+
+/*********************************************************
+ * check_search_date()
+ *
+ * 日付チェック
+ *
+ * [引数]
+ *      $year         年
+ *      $mon          月
+ *      $day          日
+ *                    ※YYYY-MM-DD形式を正常とする
+ *                      但し、月と日は必ずしも２桁でなくても良い
+ * [返り値]
+ *      TRUE          正常
+ *      FALSE         異常
+ **********************************************************/
+function check_search_date($year, $mon, $day)
+{
+    // 全て指定されていないときは無視
+    if ($year == "" && $mon == "" && $day == "") {
+        return TRUE;
+    }
+
+    // 形式チェック(年)
+    if (!preg_match('/^[0-9]{4}$/', $year)) {
+        return FALSE;
+    }
+
+    // 形式チェック(月)
+    if (!preg_match('/^[0-9]{1,2}$/', $mon)) {
+        return FALSE;
+    }
+
+    // 形式チェック(日)
+    if (!preg_match('/^[0-9]{1,2}$/', $day)) {
+        return FALSE;
+    }
+
+    // 存在する日付かチェック
+    if (!checkdate($mon, $day, $year)) {
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/*********************************************************
+ * check_macaddr()
+ *
+ * 入力されたMACアドレスを2桁の:区切りにする
+ *
+ * [引数]
+ *      $postmacaddr 入力されたMACアドレス
+ * [返り値]
+ *      $macaddr    2桁:区切りのMACアドレス
+ **********************************************************/
+function check_macaddr($postmacaddr)
+{
+
+    $macaddr = "";
+    /* 入力された値に:があるか */
+    /* 1桁または2桁の処理 */
+    $ret = strpbrk($postmacaddr, ':');
+    if ($ret != FALSE) {
+        /* :があれば:で区切る */
+        $split = explode(":", $postmacaddr);
+        /* 2桁にする */
+        foreach ($split as $macsplit) {
+            /* 1桁ならば頭に0をつけて2桁にする */
+            if (strlen($macsplit) == 1) {
+                $macsplit = "0" . $macsplit;
+            }
+            $macaddr .= $macsplit . ":";
+        }
+        $macaddr = substr($macaddr, 0, -1);
+        $macaddr = strtolower($macaddr);
+        return $macaddr;
+    }
+    /* 入力された値に.があるか */
+    $ret = strpbrk($postmacaddr, '.');
+    if ($ret != FALSE) {
+        /* .があれば.で区切る */
+        $macpieces = explode(".", $postmacaddr);
+        foreach ($macpieces as $macpiece) {
+            $split = str_split($macpiece, 2);
+                foreach ($split as $macsplit) {
+                    /* 1桁ならば頭に0をつけて2桁にする */
+                    if (strlen($macsplit) == 1) {
+                        $macsplit = "0" . $macsplit;
+                    }
+                    $macaddr .= $macsplit .":";
+                }
+        }
+        $macaddr = substr($macaddr, 0, -1);
+        $macaddr = strtolower($macaddr);
+        return $macaddr;
+    }
+    /* 入力された値に区切り文字が無い */
+    $split = str_split($postmacaddr, 2);
+    foreach ($split as $macsplit) {
+        /* 1桁ならば頭に0をつけて2桁にする */
+        if (strlen($macsplit) == 1) {
+            $macsplit = "0" . $macsplit;
+        }
+        $macaddr .= $macsplit .":";
+    }
+    $macaddr = substr($macaddr, 0, -1);
+    $macaddr = strtolower($macaddr);
+    return $macaddr;
+}
+
+/*********************************************************
+ * check_add_subnet_data_v6()
+ *
+ * 入力データをチェックする関数(v6用)
+ *
+ * [引数]
+ *      $post                     入力された値
+ *
+ * [返り値]
+ *      FUNC_TRUE                 正常
+ *      FUNC_FALSE                異常
+ ********************************************************/
+function check_add_subnet_data_v6($post)
+{
+    /* グロバール変数 */
+    global $msgarr;
+    global $err_msg;
+    global $log_msg;
+
+    /* サブネットの入力がなかった場合 */
+    if ($post["subnet"] == "") {
+        $err_msg = $msgarr['29001'][SCREEN_MSG];
+        $log_msg = $msgarr['29001'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*プレフィックスの入力がなかった場合*/
+    if ($post["netmask"] == "") {
+        $err_msg = $msgarr['29021'][SCREEN_MSG];
+        $log_msg = $msgarr['29021'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*サブネットの形式チェック*/
+    $ret = filter_var($post["subnet"], FILTER_VALIDATE_IP, FILTER_FLAG_IPV6);
+    if ($ret === FALSE) {
+        $err_msg = $msgarr['29002'][SCREEN_MSG];
+        $log_msg = $msgarr['29002'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /* プレフィックスの形式チェック */
+    $num = "0123456789";
+    $len = strlen($post["netmask"]);
+    // 半角数字のみ許可
+    if (strspn($post["netmask"], $num) != $len) {
+        $err_msg = $msgarr['29022'][SCREEN_MSG];
+        $log_msg = $msgarr['29022'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+    // 許可文字数
+    if ((1 > $post["netmask"]) || (128 < $post["netmask"])) {
+        $err_msg = $msgarr['29004'][SCREEN_MSG];
+        $log_msg = $msgarr['29004'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    return FUNC_TRUE;
+}
+
+/*********************************************************
+ * check_add_mac()
+ *
+ * macアドレスの入力値チェック
+ *
+ * [引数]
+ *      $mac        入力された値
+ * [返り値]
+ *      TRUE         正常
+ *      FALSE        異常
+ **********************************************************/
+function check_add_mac($mac)
+{
+    /* 文字数チェック */
+    /* macに値があるか調べる */
+    if (isset($mac) && $mac != "") {
+        $length = strlen($mac);
+        if ($length > MAX_MAC_LENGTH) {
+            return FALSE;
+        }
+        /* 入力された値に:があるか */
+        $ret = strpbrk($mac, ':');
+        if ($ret != FALSE) {
+            /*正規表現を設定する*/
+            $number = '[a-fA-F0-9]{1,}';
+            $macregular = '/^' . $number . '\:' . $number . '\:' . $number . '\:' . $number . '\:' . $number . '\:' . $number . '$/';
+            /*許可文字種*/
+            if (!preg_match($macregular, $mac)) {
+                return FALSE;
+            }
+            /* :があれば:で区切る */
+            $split = explode(":", $mac);
+            foreach ($split as $macsplit) {
+                /* 1桁または2桁でなければならない */
+                if (strlen($macsplit) > 2) {
+                    return FALSE;
+                }
+            }
+        }
+        /* 入力された値に.があるか */
+        $ret = strpbrk($mac, '.');
+        if ($ret != FALSE) {
+            /*正規表現を設定する*/
+            $number = '[a-fA-F0-9]{1,}';
+            $macregular = '/^' . $number . '\.' . $number . '\.' . $number . '$/';
+            /*許可文字種*/
+            if (!preg_match($macregular, $mac)) {
+                return FALSE;
+            }
+            /* .があれば.で区切る */
+            $split = explode(".", $mac);
+            foreach ($split as $macsplit) {
+                /* 4桁でなければならない */
+                if (strlen($macsplit) !=  4) {
+                    return FALSE;
+                }
+            }
+        }
+        /* 入力された値に.:もない */
+        $ret = strpbrk($mac, '.:');
+        if ($ret == FALSE) {
+            /* 半角英大小文字(a~f)、数字、のみ許可 */
+            $num = "0123456789";
+            $sl = "abcdef";
+            $ll = strtoupper($sl);
+            $allow_letter = $num . $sl . $ll;
+            if (strspn($mac, $allow_letter) != $length) {
+                return FALSE;
+            }
+            if (strlen($mac) != 12) {
+                return FALSE;
+            }
+        }
+    }
+    /*値がなかったらTRUE*/
+    return TRUE;
+}
+
+/*********************************************************
+ * check_update_subnet_data_v6()
+ *
+ * ネットワーク設定編集画面の入力値チェック関数
+ *
+ * [引数]
+ *      $post                     $_POSTで渡される値
+ *
+ * [返り値]
+ *      FUNC_TRUE                 正常
+ *      FUNC_FALSE                異常
+ ********************************************************/
+function check_update_subnet_data_v6($post)
+{
+    /*グロバール変数*/
+    global $msgarr;
+    global $err_msg;
+    global $log_msg;
+
+    $ret = FUNC_FALSE;
+
+    /*標準リース時間が入力されたかどうかチェックする*/
+    if ($post["leasetime"] == "") {
+        $err_msg = $msgarr['29011'][SCREEN_MSG];
+        $log_msg = $msgarr['29011'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*最大リース時間が入力されたかどうかチェックする*/
+    if ($post["maxleasetime"] == "") {
+        $err_msg = $msgarr['29013'][SCREEN_MSG];
+        $log_msg = $msgarr['29013'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*DNSサーバが入力されたかどうかチェックする*/
+    if ($post["dnsserver"] == "") {
+        $err_msg = $msgarr['29015'][SCREEN_MSG];
+        $log_msg = $msgarr['29015'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*ドメイン名をチェックする*/
+    $ret = check_defdomain($post["domainname"]);
+    if ($ret === FALSE) {
+        $err_msg = $msgarr['29010'][SCREEN_MSG];
+        $log_msg = $msgarr['29010'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*標準リース時間の形式をチェックする*/
+    $ret = check_subnet_leasetime($post["leasetime"]);
+    if ($ret === FUNC_FALSE) {
+        $err_msg = $msgarr['29012'][SCREEN_MSG];
+        $log_msg = $msgarr['29012'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*最大リース時間の形式をチェックする*/
+    $ret = check_subnet_leasetime($post["maxleasetime"]);
+    if ($ret === FUNC_FALSE) {
+        $err_msg = $msgarr['29014'][SCREEN_MSG];
+        $log_msg = $msgarr['29014'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*DNSサーバアドレスの方式をチェックする*/
+    $ret = check_subnet_dns_v6($post["dnsserver"]);
+    if ($ret === FUNC_FALSE) {
+        $err_msg = $msgarr['29016'][SCREEN_MSG];
+        $log_msg = $msgarr['29016'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+
+    /*Etraオプションをチェックする*/
+    $ret = check_subnet_option($post["exoption"]);
+    if ($ret === FUNC_FALSE) {
+        $err_msg = $msgarr['29017'][SCREEN_MSG];
+        $log_msg = $msgarr['29017'][LOG_MSG];
+        return FUNC_FALSE;
+    }
+    return FUNC_TRUE;
+}
+
+/*********************************************************
+ * check_subnet_dns_v6()
+ *
+ * DNSアドレスの入力値をチェックする関数
+ *
+ * [引数]
+ *      $dns                      dnsサーバアドレス
+ *
+ * [返り値]
+ *      FUNC_TRUE                 正常
+ *      FUNC_FALSE                異常
+ ********************************************************/
+function check_subnet_dns_v6($dns)
+{
+
+    /*dnsサーバのアドレスを保存する配列*/
+    $ip_array = array();
+
+    /*dnsの長さ*/
+    $len = strlen($dns);
+
+    /*DNSサーバアドレスの長さをチェックする*/
+    if ($len > 399) {
+        return FUNC_FALSE;
+    }
+
+    /*「,」でdnsを分割する*/
+    $ip_array = explode(",", $dns);
+
+    /*10以上入力されていないかを確認*/
+    $num = count($ip_array);
+    if ($num > 10) {
+        return FUNC_FALSE;
+    }
+
+    /*同じIPアドレスが複数回設定されていないこと*/
+    $new_ip_array = array_unique($ip_array);
+    $new_num = count($new_ip_array);
+    if ($num != $new_num) {
+        return FUNC_FALSE;
+    }
+
+    /*文字種をチェックする*/
+    foreach ($ip_array as $ip) {
+        /*IPアドレスの形式チェック*/
+        $ret = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6);
+        if ($ret === FALSE) {
+            return FUNC_FALSE;
+        }
+    }
+
+    return FUNC_TRUE;
+}
+
+/*********************************************************
+ * check_add_duplication()
+ *
+ * 新規の重複チェック 
+ *
+ * [引数]
+ *      $hoststr      $_SESSIONの中身 
+ *      $post         画面から渡ってきた値 
+ *
+ * [返り値]
+ *      0            正常
+ *      1            ホスト名エラー
+ *      2            MACアドレスエラー
+ *      3            IPアドレスエラー
+ **********************************************************/
+function check_add_duplication($hoststr, $post)
+{
+
+    $hosts = explode("\n", $hoststr);
+    foreach ($hosts as $host) {
+        /* [host]の中身が空ならcontinue */
+        if ($host == "") {
+            continue;
+        }
+        $check_ret = check_duplication($host, $post);
+        if ($check_ret != 0) {
+            return $check_ret;
+        }
+    }
+    return 0;
+}
+
+/*********************************************************
+ * check_mod_duplication()
+ *
+ * 編集の場合の重複チェック
+ *
+ * [引数]
+ *      $hoststr      $_SESSIONの中身
+ *      $post         画面から渡ってきた値
+ *
+ * [返り値]
+ *      0            正常
+ *      1            ホスト名エラー
+ *      2            MACアドレスエラー
+ *      3            IPアドレスエラー
+ **********************************************************/
+function check_mod_duplication($hoststr, $post)
+{
+
+    $old_sn = $post["oldsn"];
+    $old_host = $post["oldhost"];
+    /* IPv4, v6で処理をわける */
+    if (STR_IP == 'v4') {
+        $old_mac = $post["oldmacaddr"];
+    } elseif (STR_IP == 'v6') {
+        $old_mac = $post["oldduid"];
+    }
+    $old_ip = $post["oldipaddr"];
+    $old_select = $post["oldipselect"];
+
+    $olddata = $old_host . "," . $old_mac . "," . $old_ip . "," . "\"$old_host\"" . "," . "$old_select";
+
+    $hosts = explode("\n", $hoststr);
+    foreach ($hosts as $host) {
+        /* [host]の中身が空ならcontinue */
+        if ($host == "") {
+            continue;
+        }
+        /* SESSIONと同じならcontinue */
+        if ($olddata == $host) {
+            continue;
+        }
+        $check_ret  = check_duplication($host, $post);
+        if ($check_ret != 0) {
+            return $check_ret;
+        }
+    }
+    return 0;
+}
+
+/*********************************************************
+ * check_duplication()
+ *
+ * 重複チェック
+ *
+ * [引数]
+ *      $host        $_SESSIONの中身
+ *      $post        画面から渡ってきた値
+ *
+ * [返り値]
+ *      0            正常
+ *      1            ホスト名エラー
+ *      2            MACアドレスエラー
+ *      3            IPアドレスエラー
+ **********************************************************/
+function check_duplication($host, $post)
+{
+    /* カンマで区切る */
+    list($subhost, $s_mac, $s_ip, $s_hostname, $s_select) = explode(",", $host);
+    $s_hostname = ltrim($s_hostname, "\"");
+    $s_hostname = rtrim($s_hostname, "\"");
+
+    /* ホスト名が重複しているか */
+    if ($post["host"] == $s_hostname) {
+        return 1;
+    }
+    /* IPv4, v6で処理をわける */
+    if (STR_IP == 'v4') {
+        /* MACアドレスが重複しているか */
+        $p_mac = check_macaddr($post["macaddr"]);
+        if ($p_mac == $s_mac) {
+            return 2;
+        }
+        /* IPアドレスがあるか */
+        if ($post["ipaddr"] != "") {
+            if ($post["ipaddr"] == $s_ip) {
+                return 3;
+            }
+        }
+    } elseif (STR_IP == 'v6') {
+        /* DUIDが重複しているか */
+        $p_duid = check_macaddr($post["duid"]);
+        if ($p_duid == $s_mac) {
+            return 2;
+        }
+        /* IPv6アドレスがあるか */
+        if ($post["ipaddr"] != "") {
+            /* バイナリに揃えて比較 */
+            $p_ip = inet_pton($post["ipaddr"]);
+            $s_ip = inet_pton($s_ip);
+            if ($p_ip == $s_ip) {
+                return 3;
+            }
+        }
+    }
+    return 0;
+}
+/*********************************************************
+ * mod_client()
+ *
+ * 編集の場合の登録
+ *
+ * [引数]
+ *      $hoststr      $_SESSIONの中身
+ *      $post         画面から渡ってきた値
+ *
+ * [返り値]
+ *      0            正常
+ *      1            ホスト名エラー
+ *      2            MACアドレスエラー
+ **********************************************************/
+function mod_client($hoststr, $post)
+{
+
+    $old_host = $post["oldhost"];
+    /* IPv4, v6で処理をわける */
+    if (STR_IP == 'v4') {
+        $old_mac = $post["oldmacaddr"];
+    } elseif (STR_IP == 'v6') {
+        $old_mac = $post["oldduid"];
+    }
+    $old_ip = $post["oldipaddr"];
+    $old_select = $post["oldipselect"];
+    $inselect = $post["ipselect"];
+    $client = "";
+    $olddata = $old_host . "," . $old_mac . "," . $old_ip . "," . "\"$old_host\"" . "," . "$old_select";
+
+    $hosts = explode("\n", $hoststr);
+    foreach ($hosts as $host) {
+        /* [host]の中身が空ならcontinue */
+        if ($host == "") {
+            continue;
+        }
+
+        if ($olddata != $host) {
+            $client .= $host . "\n";
+            continue;
+        }
+
+        /* ホスト名を入れ替え */
+        $newhostname = $post["host"];
+        /* MACアドレス */
+        if (STR_IP == 'v4') {
+            $newmac = check_macaddr($post["macaddr"]);
+        } else if (STR_IP == 'v6') {
+            $newmac = check_macaddr($post["duid"]);
+        }
+        /* IPアドレス */
+        $newip = $post["ipaddr"];
+        $client .= $newhostname . "," . $newmac . "," . $newip . "," . "\"$newhostname\"" . "," . $inselect . "\n";
+    }
+    return $client;
+}
+
+/*********************************************************
+ * check_add_in()
+ *
+ * クライアント編集画面入力値チェック
+ *
+ * [引数]
+ *      $post        画面から渡ってきた値 
+ * [返り値]
+ *      0            正常
+ *      1            ホスト名未入力
+ *      2            MACアドレス未入力
+ *      3            IPアドレス未入力
+ *      4            ホスト名エラー
+ *      5            MACアドレスエラー
+ *      6            IPアドレスエラー
+ **********************************************************/
+
+function check_add_in($post)
+{
+    $hostname = escape_html($post["host"]);
+    $mac = escape_html($post["macaddr"]);
+    $ip = escape_html($post["ipaddr"]);
+
+    $must = check_must($post);
+    switch ($must) {
+    case 1:
+        return 1;
+    case 2:
+    /* MACアドレスの入力がない */
+        return 2;
+    case 3:
+    /* IP貸出設定が選択されているか */
+        return 3;
+    case 0:
+        $ret = check_hostname($hostname);
+        if ($ret == FALSE) {
+            return 4;
+        }
+        $ret = check_add_mac($mac);
+        if ($ret == FALSE) {
+            return 5;
+        }
+        $ret = check_ip($ip);
+        if ($ret == FALSE) {
+            return 6;
+        }
+        return 0;
+    }
+}
+
+/*********************************************************
+ * check_must()
+ *
+ * 必須項目が入力されているかチェック
+ *
+ * [引数]
+ *      $post       画面から渡された値
+ * [返り値]
+ *      0            正常
+ *      1            ホスト名エラー
+ *      2            MACアドレスエラー
+ *      3            IPアドレスエラー
+ **********************************************************/
+function check_must($post)
+{
+    /* ホスト名の入力があるか */
+    if ($post["host"] == "") {
+        return 1;
+    }
+    /* IPv4, v6で処理をわける */
+    if (STR_IP == 'v4') {
+        /* MACアドレスの入力があるか */
+        if ($post["macaddr"] == "") {
+            return 2;
+        }
+    } else if (STR_IP == 'v6') {
+        /* DUIDアドレスの入力があるか */
+        if ($post["duid"] == "") {
+            return 2;
+        }
+    }
+    /* IP貸出設定が選択されているか */
+    if (empty($post["ipselect"])) {
+        return 3;
+    }
+    return 0;
+}
+
+/*********************************************************
+ * search_sn()
+ *
+ * サブネットが存在するかチェックし、shared-networkを返す 
+ *
+ * [引数]
+ *      $in_sub       画面から渡されたサブネット
+ * [返り値]
+ *      $sn          サブネットが存在したときのshared-network 
+ **********************************************************/
+function search_sn($in_sub)
+{
+    foreach ($_SESSION[STR_IP] as $sn => $value){
+        if (is_array($_SESSION[STR_IP]["$sn"])) {
+            foreach ($_SESSION[STR_IP]["$sn"] as $sub => $value) {
+            /* サブネットが存在するか */
+                if ($sub == $in_sub) {
+                    return $sn;
+                }
+            }
+        }
+    }
+}
+
+/*********************************************************
+ * new_add_host()
+ *
+ * 新規登録関数 
+ *
+ * [引数]
+ *      $post         画面から渡された値
+ *      $hostline     追加する前のホストの中身
+ * [返り値]
+ *      $hostline     新しくセッションに登録する文字列 
+ **********************************************************/
+function new_add_host($post, $hostline)
+{
+    $in_case = $post["ipselect"];
+    $in_host = $post["host"];
+    /* IPv4, v6で処理をわける */
+    if (STR_IP == 'v4') {
+        $in_mac = $post["macaddr"];
+    } else if (STR_IP == 'v6') {
+        $in_mac = $post["duid"];
+    }
+    $in_mac = check_macaddr($in_mac);
+    $in_ip = $post["ipaddr"];
+    $hostline .= $in_host . "," . $in_mac . "," . $in_ip . "," . "\"$in_host\"" . "," . $in_case . "\n";
+    return $hostline;
+}
+
+/*********************************************************
+ * in_range_ipv6()
+ *
+ * 入力されたIPv6がサブネット範囲内か   
+ *
+ * [引数]
+ *      $ipv6 入力されたIPv6
+ * [返り値]
+ *      TRUE           正常
+ *      FALSE          エラー
+ **********************************************************/
+function in_range_ipv6($subnet, $ipv6)
+{
+
+    /* IP部分とマスク部分に分割 */
+    list($net, $mask) = explode("/", $subnet);
+    /* マスク値(32とか64とか)をバイトに変換 */
+    $binMask = masktobyte($mask);
+    /* 論理積をとることでマスクをかける */
+    $maskNet = inet_pton($net) & $binMask; // 論理積をとることでマスクをかける
+    /* IPv6アドレスをバイトに変換しマスクをかける */
+    $maskipv6 = inet_pton($ipv6) & $binMask;
+
+    /* マスクをかけたIP部分とマスクをかけた入力されたIPv6とを比較 */
+    /* 同じでなければ範囲外なのでエラー */
+    if ($maskNet != $maskipv6) {
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/*********************************************************
+ * in_range_ipv4()
+ *
+ * 入力されたIPアドレスがサブネット範囲内か
+ *
+ * [引数]
+ *      $ipv4 入力されたIPv4
+ * [返り値]
+ *      TRUE           正常
+ *      FALSE          エラー
+ **********************************************************/
+function in_range_ipv4($subnet, $ipv4)
+{
+    /* IP部分とマスク部分に分割 */
+    list($net, $mask) = explode("/", $subnet);
+    /* マスク値をバイトに変換 */
+    $binMask = inet_pton($mask);
+    /* 論理積をとることでマスクをかける */
+    $maskNet = inet_pton($net) & $binMask;
+    /* IPv6アドレスをバイトに変換しマスクをかける */
+    $maskipv4 = inet_pton($ipv4) & $binMask;
+
+    /* マスクをかけたIP部分とマスクをかけた入力されたIPv4とを比較 */
+    /* 同じでなければ範囲外なのでエラー */
+    if ($maskNet != $maskipv4) {
+        return FALSE;
+    }
+    return TRUE;
+}
+
+
+/*********************************************************
+ * check_duplication_data()
+ *
+ * 重複チェック 
+ *
+ * [引数]
+ *      $data         ファイルの1行 
+ *
+ * [返り値]
+ *      0            正常
+ *      1            ホスト名エラー
+ *      2            MACアドレスエラー
+ *      3            IPアドレスエラー
+ *      4            Shared-networkエラー
+ **********************************************************/
+function check_duplication_data($f_data)
+{
+    $data = rtrim($f_data);
+    /* カンマで区切る */
+    list($f_subnet, $f_hostname, $f_mac, $f_ip, $f_select) = explode(",", $data);
+    /* shared-networkを取得 */
+    $sn = judge_sn($f_subnet);
+    if ($sn == "") {
+        return 4;
+    }
+    /* ホストの中身があれば重複チェック */
+    if (isset($_SESSION[STR_IP]["$sn"]["$f_subnet"]["host"])) {
+        $s_hostline = $_SESSION[STR_IP]["$sn"]["$f_subnet"]["host"];
+
+        $s_hosts = explode("\n", $s_hostline);
+        foreach ($s_hosts as $s_host) {
+            /* [host]の中身が空ならcontinue */
+            if ($s_host == "") {
+                continue;
+            }
+
+            /* カンマで区切る */
+            list($s_host, $s_mac, $s_ip, $s_hostname, $s_select) = explode(",", $s_host);
+            $s_hostname = ltrim($s_hostname, "\"");
+            $s_hostname = rtrim($s_hostname, "\"");
+
+            /* $s_hostnameの文字列は小文字のため */
+            $f_hostname = strtolower($f_hostname);
+
+            /* ホスト名が重複しているか */
+            if ($s_hostname == $f_hostname) {
+                return 1;
+            }
+            /* MACアドレスが重複しているか */
+            if ($s_mac == $f_mac) {
+                return 2;
+            }
+            /* IPアドレスがあるか */
+            if ($f_ip != "") {
+                if ($s_ip == $f_ip) {
+                    return 3;
+                }
+            }
+        }
+    }
+    /* ホストの中身がなければreturn0 */
+    return 0;
+}
+
+/*********************************************************
+ * check_input_searchdata()
+ *
+ * 検索画面入力値チェック
+ *
+ * [引数]
+ *      $data         入力値
+ *
+ * [返り値]
+ *      TRUE          正常
+ *      FALSE         異常
+ **********************************************************/
+function check_input_searchdata($data)
+{
+    global $msgarr;
+    global $err_msg;
+    global $log_msg;
+
+    // 貸出日(開始)入力値チェック
+    $ret = check_search_date($data["ssyear"], $data["ssmon"], $data["ssday"]);
+    if ($ret === FALSE) {
+        $err_msg = $msgarr['35001'][SCREEN_MSG];
+        $log_msg = $msgarr['35001'][LOG_MSG];
+        return FALSE;
+    }
+
+    // 貸出日(終了)入力値チェック
+    $ret = check_search_date($data["seyear"], $data["semon"], $data["seday"]);
+    if ($ret === FALSE) {
+        $err_msg = $msgarr['35002'][SCREEN_MSG];
+        $log_msg = $msgarr['35002'][LOG_MSG];
+        return FALSE;
+    }
+
+    // 貸出日範囲チェック
+    $ret = check_search_range($data["ssyear"], $data["ssmon"], $data["ssday"],
+                              $data["seyear"], $data["semon"], $data["seday"]);
+    if ($ret === FALSE) {
+        $err_msg = $msgarr['35007'][SCREEN_MSG];
+        $log_msg = $msgarr['35007'][LOG_MSG];
+        return FALSE;
+    }
+
+    // 貸出期限(開始)入力値チェック
+    $ret = check_search_date($data["esyear"], $data["esmon"], $data["esday"]);
+    if ($ret === FALSE) {
+        $err_msg = $msgarr['35003'][SCREEN_MSG];
+        $log_msg = $msgarr['35003'][LOG_MSG];
+        return FALSE;
+    }
+
+    // 貸出期限(終了)入力値チェック
+    $ret = check_search_date($data["eeyear"], $data["eemon"], $data["eeday"]);
+    if ($ret === FALSE) {
+        $err_msg = $msgarr['35004'][SCREEN_MSG];
+        $log_msg = $msgarr['35004'][LOG_MSG];
+        return FALSE;
+    }
+
+    // 貸出期限範囲チェック
+    $ret = check_search_range($data["esyear"], $data["esmon"], $data["esday"],
+                              $data["eeyear"], $data["eemon"], $data["eeday"]);
+    if ($ret === FALSE) {
+        $err_msg = $msgarr['35008'][SCREEN_MSG];
+        $log_msg = $msgarr['35008'][LOG_MSG];
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/*********************************************************
+ * check_search_range()
+ *
+ * 日付範囲チェック
+ *
+ * [引数]
+ *      $syear        年(開始)
+ *      $smon         月(開始)
+ *      $sday         日(開始)
+ *      $eyear        年(終了)
+ *      $emon         月(終了)
+ *      $eday         日(終了)
+ * 
+ * [返り値]
+ *      TRUE          正常
+ *      FALSE         異常
+ **********************************************************/
+function check_search_range($syear, $smon, $sday, $eyear, $emon, $eday)
+{
+    // 全て指定されていないときは無視
+    if ($syear == "" && $smon == "" && $sday == "") {
+        return TRUE;
+    }
+
+    // 全て指定されていないときは無視
+    if ($eyear == "" && $emon == "" && $eday == "") {
+        return TRUE;
+    }
+    // 年月日の文字を作成
+    $sdata = sprintf("%04d%02d%02d", $syear, $smon, $sday);
+    $edata = sprintf("%04d%02d%02d", $eyear, $emon, $eday);
+
+    // 開始と終了日を比較
+    if ($sdata > $edata) {
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/*********************************************************
+ * check_lease_time()
+ *
+ * 日付チェック
+ *
+ * [引数]
+ *      $syear        年(開始)
+ *      $smon         月(開始)
+ *      $sday         日(開始)
+ *      $eyear        年(終了)
+ *      $emon         月(終了)
+ *      $eday         日(終了)
+ *      $time_data    貸出日 or 貸出期限
+ *
+ * [返り値]
+ *      TRUE          正常
+ *      FALSE         異常
+ **********************************************************/
+function check_lease_time($syear, $smon, $sday, $eyear, $emon, $eday, $time_data)
+{
+
+    // 入力値をLinuxタイムに変更
+    $leasefile_time = strtotime($time_data);
+
+    // 日付が指定されていないときは無視(開始)
+    if ($syear != "") {
+
+        // Linuxタイムに変更
+        $tmp = sprintf("%04d%02d%02d 00:00:00", $syear, $smon, $sday);
+        $start_time = strtotime($tmp);
+
+        // 期間を比較
+        if ($leasefile_time < $start_time) {
+            return FALSE;
+        }
+    }
+
+    // 日付が指定されていないときは無視(終了)
+    if ($eyear != "") {
+
+        // Linuxタイムに変更
+        $tmp = sprintf("%04d%02d%02d 23:59:59", $eyear, $emon, $eday);
+        $end_time = strtotime($tmp);
+
+        // 期間を比較
+        if ($leasefile_time > $end_time) {
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
+/*********************************************************
+ * judge_sn()
+ *
+ * 対象サブネットのShared-networkが存在するかチェックし、
+ * shared-networkを返す 
+ *
+ * [引数]
+ *      $subnet       サブネット
+ * [返り値]
+ *      $sn           Shared-network 
+ **********************************************************/
+function judge_sn($subnet)
+{
+    foreach ($_SESSION[STR_IP] as $sn => $value){
+        if (is_array($_SESSION[STR_IP]["$sn"])) {
+            foreach ($_SESSION[STR_IP]["$sn"] as $sub => $value) {
+                /* サブネットが存在するか */
+                if ($sub == $subnet) {
+                    return $sn;
+                }
+            }
+        }
+    }   
+    /* 存在しなければ空を返す */
+    $sn = ""; 
+    return $sn;
+}
+
+
+/*********************************************************
+ * Move_Subnets()
+ *
+ * Shared-network編集削除画面から呼ばれる。
+ * 所属させたいサブネットのリストをもとに、移行作業が必要かを判別し、
+ * そのサブネットのデータを移籍させる。
+ *
+ * [引数]
+ *      $SubList  所属させるサブネット名リスト
+ *      $FromSn   移動元シェアードネットワーク名
+ *      $ToSn     移動先シェアードネットワーク名
+ *
+ * [返り値]
+ *      なし($_SESSIONが変更される)
+ ********************************************************/
+function Move_Subnets($SubList, $FromSn, $ToSn)
+{
+    /* 移動元がもともと空だったら処理を行わない */
+    if (!isset($_SESSION[STR_IP][$FromSn])) {
+        return;
+    }
+    if (!is_array($_SESSION[STR_IP][$FromSn])) {
+        return;
+    }
+
+    /* Listのデータを1つずつ確認する */
+    foreach ($SubList as $needle) {
+        /* 移動元に存在するかを確認する */
+        foreach ($_SESSION[STR_IP][$FromSn] as $Sub => $SubData) {
+            /* もともと移動元のものであれば、移籍作業を行う */
+            if ($needle == $Sub) {
+                $_SESSION[STR_IP][$ToSn][$Sub] = 
+                                              $_SESSION[STR_IP][$FromSn][$Sub];
+                unset($_SESSION[STR_IP][$FromSn][$Sub]);
+
+                /* サブネットは重複しないので、1つ見つかったら次へ進む */
+                break;
+            }
+        }
+    }
+
+    return;
+}
+
+
+?>

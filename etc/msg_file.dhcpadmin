@@ -1,0 +1,154 @@
+# network/sn/index.php
+27000$Shared-networkを登録しました。(%s)$Adding shared-network is successful.(%s)
+27001$Shared-network名が入力されていません。$Shared-network is not inputted.
+27002$Shared-network名の形式が不正です。$Invalid form of Shared-network.
+27003$Shared-network名が重複しています。$Shared-network is duplicated.
+27004$dhcpd.confの読み込みに失敗しました。$Failed to read dhcpd.conf file.
+27005$他のユーザが使用中のため、操作をする事ができません。$Double login.(%s)
+27006$ロックファイルの作成に失敗しました。(%s)$Fail to create lock file.(%s)
+27007$dhcpd6.confの読み込みに失敗しました。$Failed to read dhcpd6.conf file.
+# network/sn/mod.php
+28000$Shared-networkを更新しました。(%s)$Modding shared-network is successful.(%s)
+28001$Shared-network名が入力されていません。$Shared-network is not inputted.
+28002$Shared-network名の形式が不正です。$Invalid form of Shared-network.
+28003$Shared-network名が重複しています。$Shared-network is duplicated.
+28004$Shared-networkを削除しました。(%s)$Deleting shared-network is successful.(%s)
+28005$サブネットが見つかりません。(%s)$Subnet is not found.(%s)
+28006$Shared-networkが存在しません。(%s)$Shared-network does not exist.(%s)
+28007$所属するサブネットが存在します。$Subnet must be deleted.
+# network/subnet/index.php
+29000$サブネットを削除しました。(%s)$Deletting subnet is successful.(%s)
+29001$サブネットが入力されていません。$Subnet is not inputted.
+29002$サブネットの形式が不正です。$Invalid form of subnet.
+29003$ネットマスクが入力されていません。$Netmask is not inputted.
+29004$ネットマスクの形式が不正です。$Invalid form of Netmask.
+29005$サブネットを選択してください。$Subnet is not selected.
+29006$サブネットが存在しません。(%s)$Subnet does not exist.(%s) 
+29020$サブネットの中にクライアントが残っているので、削除出来ません。(%s)$Subnet contains host.(%s) 
+29021$プレフィックスが入力されていません。$Prefix is not inputted.
+29022$プレフィックスの形式が不正です。$Invalid form of Prefix.
+# network/subnet/mod.php
+29007$サブネットを更新しました。(%s)$Updating subnet is successful.(%s) 
+29008$ルータが入力されていません。$Router is not inputted.
+29009$ルータの形式が不正です。$Invalid form of router.
+29010$ドメイン名の形式が不正です。$Invalid form of domain.
+29011$標準リース時間が入力されていません。$Leasetime is not inputted.
+29012$標準リース時間の形式が不正です。$Invalid form of leasetime.
+29013$最大リース時間が入力されていません。$Maxleasetime is not inputted.
+29014$最大リース時間の形式が不正です。$Invalid form of maxleasetime.
+29015$DNSサーバアドレスが入力されていません。$DNS server is not inputted.
+29016$DNSサーバアドレスの形式が不正です。$Invalid form of DNS server.
+29017$Extraオプションの形式が不正です。$Invalid form of Extra option.
+29018$サブネットが重複しています。$Subnet is duplicated.
+# network/subnet/range.php
+30000$範囲を削除しました。(%s)$Deleting range is successful.(%s) 
+30001$範囲が選択されていません。$Range is not selected.
+30002$範囲が存在しません。(%s)$Range does not exist.(%s) 
+# subnet/range_add/php
+31000$範囲を更新しました(%s -> %s)。$Updating range is successful.(%s -> %s)
+31001$範囲(開始)が入力されていません。$Range(start) is not inputted.
+31002$範囲(終了)が入力されていません。$Range(end) is not inputted.
+31003$範囲(開始)の形式が不正です。$Invalid form of range(start).
+31004$範囲(終了)の形式が不正です。$Invalid form of range(end).
+31005$範囲が存在しません(%s)。$Range does not exist.(%s)
+31006$範囲が重複しています(%s)。$Range is duplicated.(%s)
+31007$範囲がサブネットの中に含まれていません(%s)。$Range is out of Subnet.(%s)
+31008$範囲の形式が不正です(%s)。$Invalid form of range.(%s)
+31009$範囲を登録しました(%s)。$Adding range is successful.(%s)
+# client/index.php
+32000$選択されたクライアントを削除しました。$Deleting client is successful.
+32001$ホスト名の形式が不正です。$Invalid form of hostname.
+32002$MACアドレスの形式が不正です。$Invalid form of MAC address.
+32003$IPアドレスの形式が不正です。$Invalid form of IP address.
+32004$選択されたクライアントが存在しません。$Client does not exist.
+32005$クライアントが選択されていません。$Client is not selected.
+32006$サブネットが選択されていません。$Subnet is not selected.
+32007$DUIDの形式が不正です。$Invalid form of DUID.
+32008$IPv6アドレスの形式が不正です。$Invalid form of IPv6 address.
+# client/add.php
+33001$サブネットが選択されていません。$Subnet is not selected.
+33002$ホスト名が入力されていません。$Hostname is not inputted.
+33003$ホスト名の形式が不正です。$Invalid form of hostname.
+33004$MACアドレスが入力されていません。$MAC address is not inputted.
+33005$MACアドレスの形式が不正です。$Invalid form of MAC address.
+33006$IPアドレスの形式が不正です。$Invalid form of IP address.
+33007$クライアントの登録に成功しました。$Client is successful.
+33008$サブネットが存在しません。$Subnet does not exist.
+33009$IP貸出設定が選択されていません。$allow/deny is not selected.
+33010$ホスト名が重複しています。$Hostname is duplicated.
+33011$MACアドレスが重複しています。$MAC address is duplicated.
+33012$IPアドレスが重複しています。$IP address is duplicated.
+33013$DUIDが入力されていません。$DUID is not inputted.
+33014$DUIDの形式が不正です。$Invalid form of DUID.
+33015$DUIDが重複しています。$DUID is duplicated.
+33016$IPv6アドレスの形式が不正です。$Invalid form of IPv6 address.
+33018$IPv6アドレスが重複しています。$IPv6 address is duplicated.
+33019$IPv6アドレスがサブネットの中に含まれていません。$IPv6 address is out of Subnet.
+33020$IPアドレスの範囲がサブネットの中に含まれていません。$IP address range is out of Subnet.
+33021$範囲の中にクライアントが残っているので、削除出来ません。(%s)$Range contains host.(%s) 
+# client/upload.php
+34001$カラムの数が不正です。(%s行目)$Invalid column of csv file.(line:%s)
+34002$サブネットが入力されていません。(%s行目)$Subnet is not inputted.(line:%s)
+34003$ホスト名が入力されていません。(%s行目)$Hostname is not inputted.(line:%s)
+34004$ホスト名の形式が不正です。(%s行目)$Invalid form of hostname.(line:%s)
+34005$MACアドレスが入力されていません。(%s行目)$MAC address is not inputted.(line:%s)
+34006$MACアドレスの形式が不正です。(%s行目)$Invalid form of MAC address.(line:%s)
+34007$IPアドレスの形式が不正です。(%s行目)$Invalid form of IP address.(line:%s)
+34008$CSVファイルの読み込みに失敗しました。$Failed to read CSV file.
+34009$サブネットの形式が不正です。(%s行目)$Invalid form of Subnet.(line:%s)
+34010$IP貸出設定が入力されていません。(%s行目)$allow/deny is not inputted.(line:%s)
+34011$サブネットが存在しません。(%s行目)$Subnet does not exist.(line:%s)
+34012$IP貸出設定の形式が不正です。(%s行目)$Invalid form of allow/deny.(line:%s)
+34013$CSVファイルの中身がありません。$CSV file is empty.
+34014$CSVの中身が重複しています。(%s行目)$CSV file is duplicated.(line:%s)
+34015$ホスト名が重複しています。(%s行目)$Hostname is duplicated.(line:%s)
+34016$MACアドレスが重複しています。(%s行目)$MAC address is duplicated.(line:%s)
+34017$IPアドレスが重複しています。(%s行目)$IP address is duplicated.(line:%s)
+34018$アップロードされたファイルの中でホスト名が重複しています。(%s行目)$Hostname is duplicated in upload file.(line:%s)
+34019$アップロードされたファイルの中でMACアドレスが重複しています。(%s行目)$MAC address is duplicated in upload file.(line:%s)
+34020$アップロードされたファイルの中でIPアドレスが重複しています。(%s行目)$IP address is duplicated in upload file.(line:%s)
+34021$クライアントの登録に成功しました。$Client is successful.
+34022$Shared-networkが存在しません。$Shared-network does not exist.
+34023$DUIDが入力されていません。(%s行目)$DUID is not inputted.(line:%s)
+34024$DUIDの形式が不正です。(%s行目)$Invalid form of DUID.(line:%s)
+34025$IPv6アドレスの形式が不正です。(%s行目)$Invalid form of IPv6 address.(line:%s)
+34026$アップロードされたファイルの中でDUIDが重複しています。(%s行目)$DUID is duplicated in upload file.(line:%s)
+34027$アップロードされたファイルの中でIPv6アドレスが重複しています。(%s行目)$IPv6 address is duplicated in upload file.(line:%s)
+34028$DUIDが重複しています。(%s行目)$DUID is duplicated.(line:%s)
+34029$IPv6アドレスが重複しています。(%s行目)$IPv6 address is duplicated.(line:%s)
+# search/index.php
+35001$貸出日(開始)の形式が不正です。$Invalid form of lease time(start).
+35002$貸出日(終了)の形式が不正です。$Invalid form of lease time(end).
+35003$貸出期限(開始)の形式が不正です。$Invalid form of lease period(start).
+35004$貸出期限(終了)の形式が不正です。$Invalid form of lease period(end).
+35005$一致する貸出情報がありません$
+35006$検索値の形式が不正です。$Invalid form of condition.
+35007$貸出日の範囲が不正です。$Invalid form of lease time.
+35008$貸出期限の範囲が不正です。$Invalid form of lease period.
+# reload/index.php
+36000$dhcpを再起動しました。$Restarting dhcp is successful.
+36001$バックアップファイルの作成に失敗しました。(%s)$Failed to create backup file.(%s) 
+36002$一時ファイルの作成に失敗しました。(%s)$Failed to create tempolary file.(%s) 
+36003$設定ファイルの上書きにに失敗しました。(%s)$Failed to upload dhcpd.conf file.(%s) 
+36004$dhcpdのコンフィグテストエラーが発生しました。$Failed to configtest.
+36005$dhcpdの再起動に失敗しました。$Failed to restart.
+# lib/dglibdhcpadmin 
+36006$状態確認コマンドの実行に失敗しました。(%s)$Failed to status_check.(%s)
+# v6reload/index.php
+36007$dhcpd6のコンフィグテストエラーが発生しました。$Failed to configtest(v6).
+36008$dhcpd6の再起動に失敗しました。$Failed to restart(v6).
+36009$dhcpd6を再起動しました。$Restarting dhcpd6 is successful.(v6)
+# dhcpadmin_import_csv
+37001$ディレクトリが存在していません。(%s)$Directory do not exist.(%s)
+37002$ディレクトリにファイルの取得が失敗しました。(%s)$Failed to scan dir.(%s)
+37003$ファイルの読み込みが失敗しました。(%s)$Failed to read file.(%s)
+37004$メールの送信が失敗しました。(%s)$Failed to sendmail.(%s)
+37005$ロックファイルの削除が失敗しました。(%s)$Failed to delete lock file.(%s)
+37006$CSVファイルのバックアップが失敗しました。(%s)(%s)$Failed to backup csv file.(%s)(%s)
+37007$$CSV file imported successfully.(%s)
+37008$$Since the MAC Address is duplicated, the hostname has been deleted.(%s, %s, %s, %s)
+37009$$Since the IP Address is duplicated, the hostname has been deleted.(%s, %s, %s, %s)
+37010$CSVファイルにホスト名が重複しています。(%s)$Duplicated Hostname in file CSV(%s).
+37011$CSVファイルにMACアドレスが重複しています。(%s)$Duplicated MAC address in file CSV(%s).
+37012$CSVファイルにIPアドレスが重複しています。(%s)$Duplicated IP address in file CSV(%s).
+37013$CSVファイルが存在していません。(%s)$File CSV do not exist(%s).

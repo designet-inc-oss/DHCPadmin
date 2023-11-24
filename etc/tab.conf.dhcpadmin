@@ -1,0 +1,13 @@
+dhcpadmin/network:ネットワーク設定
+dhcpadmin/network/sn:Shared-network管理
+dhcpadmin/network/subnet:サブネット管理
+dhcpadmin/client:クライアント設定
+dhcpadmin/search:貸出情報検索
+dhcpadmin/reload:設定適用
+dhcpadmin/v6network:IPv6 ネットワーク設定
+dhcpadmin/v6network/sn:IPv6 Shared-network管理
+dhcpadmin/v6network/subnet:IPv6 サブネット管理
+dhcpadmin/v6client:IPv6 クライアント設定
+dhcpadmin/v6search:IPv6 貸出情報検索
+dhcpadmin/v6reload:IPv6 設定適用
+postldapadmin/adminpass:管理者アカウント管理

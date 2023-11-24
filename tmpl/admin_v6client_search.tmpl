@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <title><<TITLE>></title>
+  <meta charset="EUC-JP">
+  <link rel="stylesheet" href="../../../css/bootstrap/css/bootstrap-paper.css">
+  <script src="../../../js/jquery-3.1.1.min.js"></script>
+  <script src="../../../js/jquery-ui.min.js"></script>
+  <script src="../../../css/bootstrap/js/bootstrap.min.js"></script>
+  <link rel="stylesheet" href="../../../css/style.css">
+  <link rel="stylesheet" href="../../../admin/dhcpadmin.css">
+  <<JAVASCRIPT>>
+
+<script type="text/javascript">
+<!--
+function snSubmit(url, host, subnet, duid, ip, select, mode) {
+    document.data_form.action = url;
+    document.data_form.modhost.value = host;
+    document.data_form.modsubnet.value = subnet;
+    document.data_form.modduid.value = duid;
+    document.data_form.modipaddr.value = ip;
+    document.data_form.modipselect.value = select;
+    document.data_form.mode.value = mode;
+    document.data_form.submit();
+}
+function CheckSwitch() {
+    switchel = document.getElementsByClassName("delswitch");
+    element = document.getElementsByClassName("alldel");
+
+    if (switchel[0].checked) {
+        cond = true;
+    } else {
+        cond = false;
+    }
+
+    for(i = 0; i < element.length; i++){
+       element[i].checked = cond;
+    }
+}
+
+// -->
+</script>
+
+</head>
+
+<body>
+<header class="">
+  <nav class="navbar navbar-default navmargin">
+    <div class="navbar-header">
+      <button type="button" class="navbar-toggle" data-toggle="collapse" data-target="#gmenu">
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+      </button>
+      <div class="navbar-brand"></div>
+    </div>
+
+
+    <div id="gmenu" class="collapse navbar-collapse">
+      <ul class="nav navbar-nav navbar-right ">
+<<START_TAB>>
+<li class="<<ACTIVE>>"><a href="#" onClick="dgpSubmit('<<URL>>')"><span class="glyphicon glyphicon-user" aria-hidden="true"></span><<NAME>></a></li>
+<<END_TAB>>
+<li class=""><a href="#" onClick="dgpSubmit('../../dhcpadmin_logout.php')"><span class="glyphicon glyphicon-user" aria-hidden="true"></span>ログアウト</a></li>
+      </ul>
+    </div>
+  </nav>
+  <div class="container-fluid fix-padding">
+  </div>
+</header>
+
+<div class="container-fluid">
+  <!-- 左グリッド  -->
+  <div class="row">
+    <!-- 左ナビゲーションバー -->
+    <nav class="aside col-sm-2">
+      <div class="panel panel-default">
+        <ul class="list-group">
+<<START_MENU>>
+<a class="list-group-item  <<ACTIVE>>" href="#"	onClick="dgpSubmit('<<URL>>')"><<NAME>></a>
+<<END_MENU>>
+        </ul>
+      </div>
+    </nav>
+
+    <!-- 右グリッド  -->
+    <div class="col-sm-10">
+      <!-- エラーメッセージ -->
+
+      <!-- メインコンテンツ -->
+      <div class="panel panel-primary">
+        <div class="panel-heading">
+          <h3 class="panel-title">クライアント設定</h3>
+        </div>
+        <div class="ErrorMessage"></div>
+        <div class="panel-body">
+          <!-- フォーム -->
+          <div class="col-sm-12">
+            <form class="form-horizontal" method="POST" action="index.php" name="data_form">
+              <div class="form-group well">
+
+<<MESSAGE>>
+                <div class="form-group">
+                  <label for="user" class="col-sm-2 control-label">サブネット</label>
+                  <div class="col-sm-10">
+                    <select multiple name="subnet" class="select_subnet">
+                      <<SEARCHSUBNET>>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label for="user" class="col-sm-2 control-label">ホスト名</label>
+                  <div class="col-sm-5">
+                    <input type=text class="form-control" maxlength="128" name=host value="<<SEARCHHOST>>">
+                  </div>
+                  <select name="hostsearch" class="select_equal">
+                    <<HOST_MATCH>>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label for="user" class="col-sm-2 control-label">DUID</label>
+                  <div class="col-sm-5">
+                    <input type=text class="form-control" maxlength="128" name=duid value="<<SEARCHDUID>>">
+                  </div>
+                  <select name="duidsearch" class="select_equal">
+                    <<DUID_MATCH>>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label for="user" class="col-sm-2 control-label">IPv6アドレス</label>
+                  <div class="col-sm-5">
+                    <input type=text class="form-control" maxlength="39" name=ipaddr value="<<SEARCHIPV6>>">
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label for="user" class="col-sm-2 control-label">IP貸出設定</label>
+                  <div class="col-sm-8">
+                    <<SEARCHLEASE>>
+                  </div>
+                </div>
+
+                <!-- ボタン -->
+                <div class="form-group">
+                  <div class="col-sm-12">
+                    <<SK>>
+                    <button type="submit" name="search" class="btn btn-primary">検索</button>
+                    <button type="submit" name="download" class="btn btn-primary">検索結果ダウンロード</button>
+                    <button type="submit" name="add_client" class="btn btn-primary">クライアント登録</button>
+                    <button type="submit" name="upload" class="btn btn-primary">クライアント一括登録</button>
+                    <input type=hidden name=searchflag value="<<SEARCH>>">
+                    <input type=hidden name=mode>
+                    <input type=hidden name=modsubnet>
+                    <input type=hidden name=modhost>
+                    <input type=hidden name=modduid>
+                    <input type=hidden name=modipaddr>
+                    <input type=hidden name=modipselect>
+                  </div>
+                </div>
+                <div class="form-group">
+                  <div class="col-sm-12">
+                    <table class="table table-condensed search_table table-responsive">
+                      <tr>
+                        <th class="search search_more"><input type="checkbox" class="delswitch" name="delswitch" onClick="CheckSwitch()"></th>
+                        <th class="search search_v6subnet">サブネット</th>
+                        <th class="search search_v6host">ホスト名</th>
+                        <th class="search search_v6duid">DUID</th>
+                        <th class="search search_v6ipaddr">IPv6アドレス</th>
+                        <th class="search search_set">IP貸出設定</th>
+                      </tr>
+                      <<STARTLOOP>>
+                      <tr>
+                        <td class="resultitem"><input class="alldel" type="checkbox" name=alldel[] value="<<SN>>,<<SUBNET>>,<<ESCAPEHOST>>,<<DUID>>,<<IPV6>>,<<CHECK>>"></td>
+                        <td class="resultitem"><<SUBNET>></td>
+                        <td class="resultitem"><<HOST>></td>
+                        <td class="resultitem"><<DUID>></td>
+                        <td class="resultitem"><<IPV6>></td>
+                        <td class="resultitem"><<LEASE>></td>
+                      </tr>
+                      <<ENDLOOP>>
+                    </table>
+                    <button type="submit" name="delete" class="btn btn-primary" onclick="return confirm('選択したクライアントを削除します。よろしいですか?')">削除</button>
+                  </div>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<footer class="footer nav navbar-default">
+    <nav class="pull-right">
+      <div class="navbar-brand"></div>
+    </nav>
+</footer>
+
+<form method="post" name="common">
+  <<SK>>
+</form>
+
+</body>
+
+</html>

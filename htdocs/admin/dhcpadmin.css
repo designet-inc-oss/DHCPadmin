@@ -1,0 +1,136 @@
+/*
+ * DHCPadmin
+ *
+ * Copyright (C) 2017 DesigNET, INC.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ */
+@media (min-width: 992px) {
+    .search_subnet {
+        width: 240px;
+    }
+    .search_host {
+    }
+    .search_mac {
+        width: 160px;
+    }
+    .search_ipaddr {
+        width: 160px;
+    }
+    .search_v6subnet {
+        width: 310px;
+    }
+    .search_v6ipaddr {
+        width: 280px;
+    }
+    .mr-select_subnet {
+        margin-top: 145px;
+    }
+}
+
+.navbar-brand {
+  background: url("images/logo_dhcpadmin.png") no-repeat left center;
+  background-size: contain;
+  height: 49px;
+  width: 240px;
+  margin-top:10px;
+}
+.search_subnet {
+}
+.search_host {
+}
+.search_mac {
+}
+.search_ipaddr {
+}
+.search_set {
+    width: 60px;
+}
+.search_more {
+    width: 20px;
+}
+.search_date {
+    width: 120px;
+}
+.search_v6subnet {
+}
+.search_v6host {
+}
+.search_v6duid {
+}
+.search_v6ipaddr {
+}
+
+th.search {
+    font-size: 10px;
+}
+table.search_table {
+    table-layout:fixed;
+    word-break: break-all;
+    word-wrap:break-word;
+}
+select.select_equal {
+    width: 100px;
+}
+select.select_subnet {
+    font-size: 13px;
+    min-width: 230px;
+    hight: 150px;
+}
+select.select_range {
+    font-size: 13px;
+    width: 240px;
+    hight: 150px;
+}
+select.v6select_range {
+    font-size: 13px;
+    hight: 150px;
+}
+input.year {
+    width: 50px;
+}
+input.month {
+    width: 35px;
+}
+input.day {
+    width: 35px;
+}
+input.v4subnet {
+    width: 180px;
+}
+input.netmask {
+    width: 120px;
+}
+input.v6subnet {
+    width: 230px;
+}
+input.prefix {
+    width: 35px;
+}
+input.v4range {
+    width: 200px;
+}
+input.v6range {
+    width: 400px;
+}
+table.list-table {
+    table-layout:fixed;
+    word-break: break-all;
+    word-wrap:break-word;
+}
+.bw {
+    word-break: break-all;
+    word-wrap:break-word;
+}

@@ -1,0 +1,253 @@
+<?php
+
+/* 一行ごとの文字列の最大長さ */
+define("LINE_LENGTH_SUBJECT", 66);
+
+/* メールヘッダーのエンコード */
+define("ISO_2022_JP", "ISO-2022-JP");
+
+/* 本文のcharser*/
+define("CHARSET_JIS", "JIS");
+
+define("SUBJECT", "Subject:");
+
+/**
+ * analyze_mail_tmpl
+ *
+ * メールテンプレートを分析して件名と本文を取得する
+ *
+ * @param  $mail_tmpl     メールテンプレートのファイルパス
+ * @param  &$ref_subject  件名(参照データ)
+ * @param  &$ref_body     本文(参照データ)
+ *
+ * @return true    正常
+ * @return false   異常
+ */
+function analyze_mail_tmpl($mail_tmpl, &$ref_subject, &$ref_body)
+{
+    /* ファイルのチェック */
+    if (!is_file($mail_tmpl)) {
+        $logmsg = sprintf(ERR_SYS_LOG_OPEN_FILE_FAIL, $mail_tmpl);
+        write_log($logmsg);
+        return false;
+    }
+
+    /* メールテンプレートファイルをオープン */
+    $file = fopen($mail_tmpl, "r");
+    if ($file === false) {
+        $logmsg = sprintf(ERR_SYS_LOG_OPEN_FILE_FAIL, $mail_tmpl);
+        write_log($logmsg);
+        return false;
+    }  
+
+    /* ヘッダーの読むモード */
+    $mode = 0;
+  
+    /* 件名初期 */
+    $subject = "";
+
+    /* 本文初期 */
+    $body = "";
+
+    /* 一つずつ行を読み込む */
+    while(!feof($file)) {
+
+        /* ファイルポインタから 1 行取得する */
+        $line = fgets($file);
+
+        if ($line === "\n" && $mode == 0) {
+            /* 本文の読むモード */
+            $mode = 1;
+            /* 最初空行無視*/
+            continue;
+        }
+
+        /* 件名 */
+        if ($mode == 0) {
+            $subject = $line;
+        /* 本文 */
+        } else if ($mode == 1) {
+            $body .= $line;
+        }
+    }
+
+    /* ファイルを閉じる */
+    fclose($file);
+
+    /* テンプレートは改行がない場合、形式が不正 */
+    if ($mode == 0) {
+        $logmsg = sprintf(ERR_SYS_LOG_MAIL_TMPL_INVALID, $mail_tmpl, 
+                         "Do not exit body part");
+        write_log($logmsg);
+        return false;
+    }
+
+    /* 件名の開始文字列 */
+    $start_sbj = substr($subject, 0, strlen(SUBJECT));
+    if ($start_sbj !== SUBJECT) {
+        $logmsg = sprintf(ERR_SYS_LOG_MAIL_TMPL_INVALID, $mail_tmpl, 
+                          "Subject do not exist char[subject:]");
+        write_log($logmsg);
+        return false;
+    }
+
+    /* 格納 */
+    $ref_subject = substr($subject, strlen(SUBJECT) + 1);;
+    $ref_body = $body;
+
+    return true;
+}
+
+/**
+ * sendmail_to_admin
+ *
+ * 管理者にメールを通知する
+ *
+ * @param  $mail_tmpl   メールのテンプレート
+ * @param  $to_addr     宛先
+ * @param  $from_addr   差出人
+ * @param  $tag         置換するタグの連想配列
+ *
+ * @return true         正常
+ * @return false        異常
+ */
+function sendmail_to_admin($mail_tmpl, $to_addr, $from_addr, $tags, $csv_data)
+{
+    /* メールテンプレートの分析 */
+    $ret = analyze_mail_tmpl($mail_tmpl, $ref_subject, $ref_body);    
+    if ($ret === false) {
+        return false;
+    }
+  
+    $body = $ref_body;
+ 
+    /* 本文のタグを置換 */
+    foreach ($tags as $key => $value) {
+        $body = str_replace($key, $value, $body);     
+    }
+
+    /* CSVデータのタグを置換 */
+    $body = replace_loop_tag($body, '{$START_LOOP_CSV}', '{$END_LOOP_CSV}', $csv_data);
+
+    /* メールを送信 */
+    $ret = send_mail($to_addr, $from_addr, $ref_subject, $body);
+
+    return $ret;
+}
+
+/**
+ * send_mail
+ *
+ * メールの送信を行う
+ *
+ * @param  $to        宛先
+ * @param  $from      差出人
+ * @param  $subject   件名
+ * @param  $body      本文
+ * @param  $cc        cc
+ * @param  $bcc       bcc
+ *
+ * @return true    正常にメールを送信した
+ * @return false   エラーが発生した
+ */
+function send_mail($to, $from, $subject = "" , $body = "", $cc = "", $bcc = "")
+{
+    /* UTF8にエンコードする */
+    mb_internal_encoding("UTF-8");
+
+    /* メールの送信元 */
+    $headers = "From: " . $from . " \n";
+
+    /* CCの設定 */
+    if ($cc !== "") {
+        $headers .= "Cc: " . $cc . " \n";
+    }
+
+    /* BCCの設定 */
+    if ($bcc != "") {
+        $headers .= "Bcc: " . $bcc . " \n";
+    }
+
+    /* ヘッダ部分を設定する */
+    $headers .= "Content-Type: text/plain;charset=" . ISO_2022_JP ." \n";
+    $headers .= "Content-Transfer-Encoding: 7bit" ." \n";
+
+    /* 本文の文字コードはISO-2022-JPをする */
+    $body = mb_convert_encoding($body, CHARSET_JIS, "UTF-8");
+
+    /* 件名はMIMEエンコードをする */
+    $preferences = array(
+   		     "input-charset" => "UTF-8",
+		     "output-charset" => "ISO-2022-JP",
+		     "line-length" => LINE_LENGTH_SUBJECT,
+		     "line-break-chars" => "\n",
+		     "scheme" => "B"
+    );
+
+    $subject = iconv_mime_encode("Subject", $subject, $preferences);
+    $subject = preg_replace("/^Subject: /", "", $subject);
+
+    /* メールを送信する */
+    $result = mail($to, $subject, $body, $headers);
+
+    /* 返す値*/
+    return $result;
+}
+
+/**
+ * replace_loop_tag
+ *
+ * ループタグを置換する
+ *
+ * @param $html         HTML
+ * @param $starttag     開始タグ
+ * @param $endtag       終了タグ
+ * @param $looptags     ループタグ
+ *
+ * @return $mod_html    置換された文字列
+ */
+function replace_loop_tag($html, $starttag, $endtag, $looptags)
+{
+    $mod_html = "";
+
+    /* ループ開始タグで分割 */
+    $dev_s = explode($starttag, $html, 2);
+    $mod_html .= $dev_s[0];
+
+    /* ループタグを存在しない場合、開始タグの前の文字列を採用する */
+    if ($looptags === array()) {
+        return $mod_html;
+    }
+
+    /* ループ開始タグが見つからなかった場合 */
+    if (isset($dev_s[1]) === FALSE || $dev_s[1] == "") {
+        return $html;
+    }
+
+    /* ループ終了タグで分割 */
+    $dev_e = explode($endtag, $dev_s[1], 2);
+
+    /* ループ終了タグが見つからなかった場合 */
+    if ($dev_e[1] == "") {
+        return $html;
+    }
+
+    /* ループ内のタグを変換 */
+    $loop_html = $dev_e[0];         // ループタグ内のHTML
+
+    /* 残りを代入する */
+    $rest_html = $dev_e[1];
+
+    foreach ($looptags as $tag) {
+        $str = $loop_html;
+        foreach ($tag as $key => $value) {
+            $str = str_replace($key, $value, $str);
+        }
+        $mod_html .= $str;
+    }
+
+    $mod_html .= $rest_html;
+
+    return $mod_html;
+}
+?>

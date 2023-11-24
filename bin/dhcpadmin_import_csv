@@ -1,0 +1,1662 @@
+#!/usr/bin/php
+<?php
+
+/* ベースディレクトリ */
+define("BASE_DIR", "/usr/local/postldapadmin/");
+
+/* ライブライを埋め込む */
+include_once(BASE_DIR. "/lib/dglibdhcpadmin");
+include_once(BASE_DIR. "/lib/dglibpostldapadmin");
+include_once(BASE_DIR. "./lib/dglibcommon");
+include_once(BASE_DIR. "/lib/dglibsendmail");
+include_once(BASE_DIR. "/htdocs/admin/dhcpadmin/initial");
+
+/* 固定値の定義 */
+define("PROCESS_NAME",      "dhcpadmin_import_csv");
+define("STR_IPV4",          "IPv4");
+define("MAX_SUBNET_LENGTH", "31");
+define("MODE_CHECK_DUP",    "2");
+define("MODE_NO_CHECK_DUP", "1");
+define("DATE_FORMAT",       "Y-m-d H:i:s");
+define("EUCJP_ENCODEING",   "EUC-JP");
+define("SJIS_ENCODEING",    "SJIS");
+define("UTF8_ENCODEING",    "UTF-8");
+define("BATCH_IP",          "127.0.0.1");
+define("BACKUP_CSV_OK",     "OK_%s.bak");
+define("BACKUP_CSV_NG",     "NG_%s.bak");
+
+/* メールテンプレートのファイルパス */
+define("MAIL_TMPL_OK", BASE_DIR. "/tmpl/mail_import_csv_success.tmpl");
+define("MAIL_TMPL_NG", BASE_DIR. "/tmpl/mail_import_csv_error.tmpl");
+
+/* ログの形式 */
+define("LOG_FMT_OK",         "%s:OK:%s");
+define("LOG_FMT_INFO",       "%s:IF:%s");
+define("LOG_FMT_ERR_CSV",    "%s:NG:%s(%s)");
+define("LOG_FMT_ERR_OTHER",  "%s:NG:%s");
+define("SCREEN_FMT_ERR_CSV", "%s(%s)");
+
+/********************************************************************
+ * 共通関数                                                         *
+ ********************************************************************/
+
+/***********************************************************
+ * dhcpadmin_login_check
+ *
+ * 二重ログインのチェックを行う
+ *
+ * [引数]
+ *        $lock_file          ロックファイルパス(参照データ)
+ *
+ * [返り値]
+ *        FUNC_TRUE           正常
+ *        FUNC_FALSE          エラー
+ *        LOCK_FALSE          二重ログイン
+ *
+ **********************************************************/
+function import_csv_login_check(&$lock_file)
+{
+    global $domain;
+    global $basedir;
+    global $lock_file;
+
+    /* tmpファイルのパスを定義 */
+    $tmp_file = $basedir .  VARDIR . $domain . '/' . LOCKFILE . '.' . getmypid();
+
+    /* ロックファイルの存在確認 */
+    if (file_exists($lock_file)) {
+
+        /* 二重ログインになっていないかチェック */
+        $ret = dhcpadmin_check_lockfile($lock_file);
+        if ($ret !== FUNC_TRUE) {
+            return $ret;
+        }
+    }
+
+    /* ロックファイルの作成 */
+    $ret = import_csv_make_lockfile($lock_file, $tmp_file);
+    if ($ret === FALSE) {
+        return FUNC_FALSE;
+    }
+
+    return FUNC_TRUE;
+}
+
+/***********************************************************
+ * import_csv_make_lockfile
+ *
+ * ロックファイルの作成
+ *
+ * [引数]
+ *        $lock_file     ロックファイルのパス
+ *        $tmp_file     一時ファイルのパス
+ *
+ * [返り値]
+ *        TRUE           正常
+ *        FALSE          エラー
+ *
+ **********************************************************/
+function import_csv_make_lockfile($lock_file, $tmp_file)
+{
+    /* ログイン情報を作成 */
+    $data = PROCESS_NAME. "\t". BATCH_IP. "\t" . time();
+
+    /* 一時ファイルをオープン */
+    $tmp_fp = fopen($tmp_file, "w");
+    if ($tmp_fp === FALSE) {
+        return FALSE;
+    }
+
+    /* 一時ファイルに書き込み */
+    $ret = fwrite($tmp_fp, $data);
+    fclose($tmp_fp);
+    if ($ret === FALSE) {
+        unlink($tmp_file);
+        return FALSE;
+    }
+
+    /* ロックファイルに置き換え */
+    $ret = rename($tmp_file, $lock_file);
+    if ($ret === FALSE) {
+        unlink($tmp_file);
+        return FUNC_FALSE;
+    }
+
+    return TRUE;
+}
+
+/***********************************************************
+ * import_csv_del_lockfile
+ *
+ * ロックファイルの削除
+ *
+ * [引数]
+ *        なし
+ *
+ * [返り値]
+ *        TRUE           正常
+ *        FALSE          エラー
+ *
+ **********************************************************/
+function import_csv_del_lockfile()
+{
+    global $domain;
+    global $basedir;
+    global $lock_file;
+
+    /* ロックファイルの読み込み */
+    $ret = dhcpadmin_read_lockfile($lock_file, $filedata);
+    if ($ret === FALSE) {
+        return FUNC_FALSE;
+    }
+
+    /* ユーザ名,IPアドレスチェック */
+    if (($filedata[0] !== PROCESS_NAME) || ($filedata[1] !== BATCH_IP)) {
+        return LOCK_FALSE;
+    }
+
+    /* ファイルの削除 */
+    $ret = unlink($lock_file);
+    if ($ret === FALSE) {
+        return LOCK_FALSE;
+    }
+
+    return FUNC_TRUE;
+}
+
+/***********************************************************
+ * scan_dir
+ *
+ * ファイルの更新時間でソートしてCSVファイルを取得する
+ *
+ * [引数]
+ *        $dir           ディレクトリパス
+ *
+ * [返り値]
+ *        TRUE           正常
+ *        FALSE          エラー
+ *
+ **********************************************************/
+function scan_dir($dir) 
+{
+    $temp_file = array();
+
+    /* ディレクトリハンドルをオープンする */
+    $h_dir = opendir($dir);
+    if ($h_dir === FALSE) {
+        return FALSE;
+    }
+
+    /*  ディレクトリハンドルからエントリを読み込む */
+    while (($filename = readdir($h_dir)) !== FALSE) {
+
+        if ($filename === '.' && $filename === '..') {
+            continue;
+        }
+
+        $csv_filepath = $dir . '/' . $filename;
+
+        /* 通常ファイルかどうかを調べる */
+        if (!is_file($csv_filepath)) {
+            continue;
+        }
+
+        /* ファイルパスに関する情報を返す */
+        $file_parts = pathinfo($csv_filepath);
+
+        /* 拡張子はcsvではない場合、次へ */
+        if (!isset($file_parts['extension']) || $file_parts['extension'] !== 'csv') {
+            continue;
+        }
+
+        /* ファイルは空の場合 */
+        if (filesize($csv_filepath) == 0){
+            continue;
+        }
+
+        /* 連想配列にファイル名と更新時間を格納 */
+        $temp_file[$filename] = filectime($csv_filepath);
+    }
+   
+    /* ディレクトリハンドルをクローズする */
+    closedir($h_dir);
+   
+    /* 連想キーと要素との関係を維持しつつ配列をソートする */
+    asort($temp_file);
+
+    return $temp_file;
+}
+
+/*********************************************************
+ * check_subnet()
+ *
+ * サブネットの入力値チェック
+ *
+ * [引数]
+ *      $subnet      サブネットの値
+ * [返り値]
+ *      TRUE         正常
+ *      FALSE        異常
+ **********************************************************/
+function check_subnet($subnet)
+{
+    /* 文字数チェック */
+    $length = strlen($subnet);
+    if ($length > MAX_SUBNET_LENGTH) {
+        return FALSE;
+    }
+    /* /で前後に分ける */
+    $piece = explode("/", $subnet);
+    if (count($piece) != 2) {
+        return FALSE;
+    }
+    /* /の前後をそれぞれチェック */
+    $ret = check_ip($piece[0]);
+    if ($ret == FALSE) {
+        return FALSE;
+    }
+    $ret = check_ip($piece[1]);
+    if ($ret == FALSE) {
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/*********************************************************
+ * check_select()
+ *
+ * IP貸出設定チェック
+ *
+ * [引数]
+ *      $select      IP貸出設定
+ * [返り値]
+ *      TRUE         正常
+ *      FALSE        異常
+ **********************************************************/
+function check_select($select)
+{
+    /* 入力された値がallowもしくはdenyか */
+    $select = mb_convert_encoding($select, EUCJP_ENCODEING, SJIS_ENCODEING);
+    if ($select == "許可" || $select == "拒否") {
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/*********************************************************
+ * add_host_session()
+ *
+ * 新規登録関数
+ *
+ * [引数]
+ *      $file_data    ファイルの中身
+ * [返り値]
+ *      TRUE         正常
+ *      FALSE        異常
+ **********************************************************/
+function add_host_session($file_data)
+{
+    foreach ($file_data as $data) {
+
+        $data = rtrim($data);
+
+        /* dataの中身が空ならcontinue */
+        if ($data == "") {
+            continue;
+        }
+
+        /* カンマで区切る */
+        list($subnet, $hostname, $mac, $ip, $select) = explode(",", $data);
+
+        /* MACアドレスを2桁に揃える */
+        $mac = check_macaddr($mac);
+
+        /* MACアドレスは小文字に変換 */
+        $mac = strtolower($mac);
+
+        /* IP貸出設定を変換する */
+        $select = mb_convert_encoding($select, EUCJP_ENCODEING, SJIS_ENCODEING);
+        if ($select == "許可") {
+            $select = "allow";
+        } else {
+            $select = "deny";
+        }
+
+        /* SESSIONに入れる文字列に並べる */
+        $line = $hostname . "," . $mac . "," . $ip . "," . "\"$hostname\"" . "," . $select;
+
+        /* Shared-networkを調べる */
+        $sn = judge_sn($subnet);
+        if ($sn == "") {
+            return FALSE;
+        }
+
+        if (isset($_SESSION[STR_IP]["$sn"]["$subnet"]["host"])) {
+            /* hostの中身あればつなげる */
+            $hostline = $_SESSION[STR_IP]["$sn"]["$subnet"]["host"];
+            $hostline = $hostline . $line . "\n";
+        } else {
+            /* hostの中身なければ代入 */
+            $hostline = $line . "\n";
+        }
+
+        /* SESSIONに登録 */
+        $_SESSION[STR_IP]["$sn"]["$subnet"]["host"] = $hostline;
+    }
+
+    return TRUE;
+}
+
+/*********************************************************
+ * check_column()
+ *
+ * カラム数チェック関数
+ *
+ * [引数]
+ *      $file_data    ファイルの中身が入った配列
+ * [返り値]
+ *      $line         エラーの行目
+ **********************************************************/
+/*カラム数チェック*/
+function check_column($file_data)
+{
+    $line = 0;
+    foreach ($file_data as $data) {
+        $line++;
+        $data = rtrim($data);
+        /* カンマで区切る */
+        $column = explode(",", $data);
+        /*カラム数チェック*/
+        if (count($column) != 5) {
+            /* エラーの行数を返す */
+            return $line;
+        }
+    }
+    /* 正しければ0を返す */
+    return 0;
+}
+
+/*********************************************************
+ * check_in_must()
+ *
+ * 必須項目が入力されているかチェック
+ *
+ * [引数]
+ *      $subnet      1行ごとのサブネット
+ *      $hostname    1行ごとのホスト名
+ *      $mac         1行ごとのmacアドレス
+ *      $select      1行ごとのIP貸出設定
+ * [返り値]
+ *      0            正常
+ *      1            サブネットエラー
+ *      2            ホスト名エラー
+ *      3            MACアドレスエラー
+ *      4            IPアドレスエラー
+ **********************************************************/
+function check_in_must($subnet, $hostname, $mac, $select)
+{
+    /* サブネットの入力があるか */
+    if ($subnet == "") {
+        return 1;
+    }
+    /* ホスト名の入力があるか */
+    if ($hostname == "") {
+        return 2;
+    }
+    /* MACアドレスの入力があるか */
+    if ($mac == "") {
+        return 3;
+    }
+    /* IP貸出設定が選択されているか */
+    if ($select == "") {
+        return 4;
+    }
+    return 0;
+}
+
+/*********************************************************
+ * check_update_in()
+ *
+ * クライアント一括登録画面入力値チェック
+ *
+ * [引数]
+ *      $file_data   ファイルの中身が入った配列
+ * [返り値]
+ *      0            正常
+ *      1            サブネット未入力
+ *      2            ホスト名未入力
+ *      3            MACアドレス未入力
+ *      4            IP貸出設定未入力
+ *      5            サブネットエラー
+ *      6            ホスト名エラー
+ *      7            MACアドレスエラー
+ *      8            IPアドレスエラー
+ *      9            IP貸出設定エラー
+ *     10            サブネットが存在しない
+ *     11            IPがサブネット範囲外
+ **********************************************************/
+function check_update_in($file_data, &$line)
+{
+    foreach ($file_data as $data) {
+        $data = rtrim($data);
+        /* カンマで区切る */
+        list($subnet, $hostname, $mac, $ip, $select) = explode(",", $data);
+
+        $line++;
+        /* 必須項目チェック */
+        $must = check_in_must($subnet, $hostname, $mac, $select);
+        if ($must != 0) {
+            /* 入力エラー */
+            return $must;
+        }
+        /* サブネットの入力がエラー */
+        $ret = check_subnet($subnet);
+        if ($ret == FALSE) {
+            return 5;
+        }
+        /* ホスト名の入力がエラー */
+        $ret = check_hostname($hostname);
+        if ($ret == FALSE) {
+            return 6;
+        }
+        /* MACアドレスの入力がエラー */
+        $ret = check_add_mac($mac);
+        if ($ret == FALSE) {
+            return 7;
+        }
+        /* IPアドレスの入力がエラー */
+        $ret = check_ip($ip);
+        if ($ret == FALSE) {
+            return 8;
+        }
+        /* IP貸出設定の入力がエラー */
+        $ret = check_select($select);
+        if ($ret == FALSE) {
+            return 9;
+        }
+        /* セッション内に同じサブネットがあるか */
+        $judge = judge_sn($subnet);
+        if ($judge == "") {
+            return 10;
+        }
+        /* IPの範囲がエラー */
+        if (isset($ip) && $ip != "") {
+            $ret = in_range_ipv4($subnet, $ip);
+            if ($ret == FALSE) {
+                return 11;
+            }
+        }
+    }
+    return 0;
+}
+
+/*********************************************************
+ * check_data_csv
+ *
+ * CSVファイルのカラムをチェックする
+ *
+ * [引数]
+ *      $file_data   csvのファイルのデータ
+ *      &$log_msg    ログメッセージ(参照データ)
+ *      &$err_msg    エラーメッセージ(参照データ)
+ *
+ * [返り値]
+ *      TRUE    正常
+ *      FALSE   異常
+ **********************************************************/
+function check_data_csv($file_data, &$log_msg, &$err_msg)
+{
+    global $msgarr;
+
+    /* カラムの値のチェック */
+    $ret = check_update_in($file_data, $line);
+
+    switch ($ret) {
+    /* サブネットの入力がない */
+    case 1:
+	$log_msg = sprintf($msgarr['34002'][LOG_MSG], $line);
+	$err_msg = sprintf($msgarr['34002'][SCREEN_MSG], $line);
+        return FALSE;
+    /* ホスト名の入力がない */
+    case 2:
+	$log_msg = sprintf($msgarr['34003'][LOG_MSG], $line);
+	$err_msg = sprintf($msgarr['34003'][SCREEN_MSG], $line);
+        return FALSE;
+    /* MACアドレスの入力がない */
+    case 3:
+	$log_msg = sprintf($msgarr['34005'][LOG_MSG], $line);
+	$err_msg = sprintf($msgarr['34005'][SCREEN_MSG], $line);
+        return FALSE;
+     /* IP貸出設定が選択されているか */
+    case 4:
+	$log_msg = sprintf($msgarr['34010'][LOG_MSG], $line);
+	$err_msg = sprintf($msgarr['34010'][SCREEN_MSG], $line);
+        return FALSE;
+    /* サブネットの入力チェックエラー */
+    case 5:
+	$log_msg = sprintf($msgarr['34009'][LOG_MSG], $line);
+	$err_msg = sprintf($msgarr['34009'][SCREEN_MSG], $line);
+        return FALSE;
+    /* ホスト名の入力チェックエラー */
+    case 6:
+	$log_msg = sprintf($msgarr['34004'][LOG_MSG], $line);
+	$err_msg = sprintf($msgarr['34004'][SCREEN_MSG], $line);
+        return FALSE;
+    /* MACアドレスの入力チェックエラー */
+    case 7:
+	$log_msg = sprintf($msgarr['34006'][LOG_MSG], $line);
+	$err_msg = sprintf($msgarr['34006'][SCREEN_MSG], $line);
+        return FALSE;
+    /* IPアドレスの入力チェックエラー */
+    case 8:
+	$log_msg = sprintf($msgarr['34007'][LOG_MSG], $line);
+	$err_msg = sprintf($msgarr['34007'][SCREEN_MSG], $line);
+        return FALSE;
+   /* IP貸出設定の入力チェックエラー */
+    case 9:
+	$log_msg = sprintf($msgarr['34012'][LOG_MSG], $line);
+	$err_msg = sprintf($msgarr['34012'][SCREEN_MSG], $line);
+        return FALSE;
+    /* サブネット存在エラー */
+    case 10:
+	$log_msg = sprintf($msgarr['34011'][LOG_MSG], $line);
+	$err_msg = sprintf($msgarr['34011'][SCREEN_MSG], $line);
+        return FALSE;
+    /* IPアドレスの範囲エラー */
+    case 11:
+	$log_msg = sprintf($msgarr['33020'][LOG_MSG], $line);
+	$err_msg = sprintf($msgarr['33020'][SCREEN_MSG], $line);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/*********************************************************
+ * check_duplication_csv_only
+ *
+ * CSVファイルにホスト名、MACアドレス、IPの重複をチェックする
+ *
+ * [引数]
+ *      $file_data   csvのファイルのデータ
+ *      $log_msg     ログメッセージ(参照データ)
+ *      $err_msg     エラーメッセージ(参照データ)
+ *
+ * [返り値]
+ *      TRUE    正常
+ *      FALSE   異常
+ **********************************************************/
+function check_duplication_csv_only($file_data, &$log_msg, &$err_msg)
+{
+    global $msgarr;
+
+    /* CSVの行数 */
+    $line = 0;
+
+    /* CSVデータ配列 */
+    $arr_data_hostname = array();
+    $arr_data_mac_addr = array();
+    $arr_data_ip_addr  = array();
+
+    foreach ($file_data as $data) {
+
+	$line++;
+
+        /* 改行の削除 */
+        $data = rtrim($data);
+
+        /* カンマで区切る */
+        list($f_subnet, $f_hostname, $f_mac, $f_ip, $f_select) = explode(",", $data);
+
+        /* ホスト名を存在した場合 */
+        if (isset($arr_data_hostname[$f_hostname])) {
+            $log_msg = sprintf($msgarr['37010'][LOG_MSG], $line);
+            $err_msg = sprintf($msgarr['37010'][SCREEN_MSG], $line);
+            return FALSE;
+        }
+
+        /* MACアドレスを存在した場合 */
+        if (isset($arr_data_mac_addr[$f_mac])) {
+            $log_msg = sprintf($msgarr['37011'][LOG_MSG], $line);
+            $err_msg = sprintf($msgarr['37011'][SCREEN_MSG], $line);
+            return FALSE;
+        }
+
+        /* IPアドレスを存在した場合 */
+        if (isset($arr_data_ip_addr[$f_ip])) {
+            $log_msg = sprintf($msgarr['37012'][LOG_MSG], $line);
+            $err_msg = sprintf($msgarr['37012'][SCREEN_MSG], $line);
+            return FALSE;
+        }
+
+        /* 一時配列に格納 */
+        $arr_data_hostname[$f_hostname][$f_mac] = "";
+        $arr_data_mac_addr[$f_mac] = "";
+        $arr_data_ip_addr[$f_ip]  = "";
+    }    
+
+    return TRUE;
+}
+
+/*********************************************************
+ * check_duplication_data_cus()
+ *
+ * 重複チェック
+ * ※この関数はlib/dglibdhcpadminからコピーして
+ *   MACアドレスは大小文字・「:，魎泙爐海箸鯊弍�する�
+ *
+ * [引数]
+ *      $f_data         ファイルの1行
+ *
+ * [返り値]
+ *      0            正常
+ *      1            ホスト名エラー
+ *      2            MACアドレスエラー
+ *      3            IPアドレスエラー
+ *      4            Shared-networkエラー
+ **********************************************************/
+function check_duplication_data_cus($f_data)
+{
+    $data = rtrim($f_data);
+    /* カンマで区切る */
+    list($f_subnet, $f_hostname, $f_mac, $f_ip, $f_select) = explode(",", $data);
+    /* shared-networkを取得 */
+    $sn = judge_sn($f_subnet);
+    if ($sn == "") {
+        return 4;
+    }
+    /* ホストの中身があれば重複チェック */
+    if (isset($_SESSION[STR_IP]["$sn"]["$f_subnet"]["host"])) {
+        $s_hostline = $_SESSION[STR_IP]["$sn"]["$f_subnet"]["host"];
+
+        $s_hosts = explode("\n", $s_hostline);
+        foreach ($s_hosts as $s_host) {
+            /* [host]の中身が空ならcontinue */
+            if ($s_host == "") {
+                continue;
+            }
+
+            /* カンマで区切る */
+            list($s_host, $s_mac, $s_ip, $s_hostname, $s_select) = explode(",", $s_host);
+            $s_hostname = ltrim($s_hostname, "\"");
+            $s_hostname = rtrim($s_hostname, "\"");
+
+            /* $s_hostnameの文字列は小文字のため */
+            $f_hostname = strtolower($f_hostname);
+
+            /* ホスト名が重複しているか */
+            if ($s_hostname == $f_hostname) {
+                return 1;
+            }
+
+            /* :を含めるMACアドレスを対応*/
+            $s_mac = str_replace(":", "", $s_mac);
+            $f_mac = str_replace(":", "", $f_mac);
+            $f_mac = strtolower($f_mac);
+            $s_mac = strtolower($s_mac);
+
+            /* MACアドレスが重複しているか */
+            if ($s_mac == $f_mac) {
+                return 2;
+            }
+            /* IPアドレスがあるか */
+            if ($f_ip != "") {
+                if ($s_ip == $f_ip) {
+                    return 3;
+                }
+            }
+        }
+    }
+    /* ホストの中身がなければreturn0 */
+    return 0;
+}
+
+/*********************************************************
+ * check_dup_csv_and_dhcpd
+ *
+ * 既存データにMACアドレスとかIPアドレスを存在したら、
+ * 重複エラーにする
+ *
+ * [引数]
+ *      $file_data   csvのファイルのデータ
+ *      $log_msg     ログメッセージ(参照データ)
+ *      $err_msg     エラーメッセージ(参照データ)
+ *
+ * [返り値]
+ *      TRUE    正常
+ *      FALSE   異常
+ **********************************************************/
+function check_dup_csv_and_dhcpd($file_data, &$log_msg, &$err_msg)
+{
+    global $msgarr;
+
+    $line = 0;
+
+    foreach ($file_data as $data) {
+
+	$line++;
+
+	$ret = check_duplication_data_cus($data);
+
+	switch ($ret) {
+	/* ホスト名重複 */
+	case 1:
+	    $log_msg = sprintf($msgarr['34015'][LOG_MSG], $line);
+	    $err_msg = sprintf($msgarr['34015'][SCREEN_MSG], $line);
+            return FALSE;
+	/* MACアドレス重複 */
+	case 2:
+	    $log_msg = sprintf($msgarr['34016'][LOG_MSG], $line);
+	    $err_msg = sprintf($msgarr['34016'][SCREEN_MSG], $line);
+            return FALSE;
+	/* IPアドレス重複 */
+	case 3:
+	    $log_msg = sprintf($msgarr['34017'][LOG_MSG], $line);
+	    $err_msg = sprintf($msgarr['34017'][SCREEN_MSG], $line);
+            return FALSE;
+	/* Shared-networkが存在しない */
+	case 4:
+	    $log_msg = sprintf($msgarr['34022'][LOG_MSG], $line);
+	    $err_msg = sprintf($msgarr['34022'][SCREEN_MSG], $line);
+            return FALSE;
+	}
+    }    
+
+    return TRUE;
+}
+
+/*********************************************************
+ * delete_dup_data_line()
+ *
+ * 重複をチェックしないモードの場合、MACアドレスとかIPアドレスは
+ * 重複しているなら、ホスト名を削除する
+ *
+ * [引数]
+ *      $f_data      ファイルの1行のデータ
+ *
+ * [返り値]
+ *      0            正常
+ *      1            ホスト名重複
+ *      2            Shared-networkを存在しない
+ **********************************************************/
+function delete_dup_data_line($f_data)
+{
+    global $msgarr;
+
+    /* ホスト名重複のフラグ */
+    $dup_hostname = FALSE;
+
+    $data = rtrim($f_data);
+
+    /* カンマで区切る */
+    list($f_subnet, $f_hostname, $f_mac, $f_ip, $f_select) = explode(",", $data);
+
+    /* 小文字に変換 */
+    $f_mac = strtolower($f_mac); 
+
+    /* shared-networkを取得 */
+    $sn = judge_sn($f_subnet);
+    if ($sn == "") {
+        return 2;
+    }
+
+    /*
+     * CSVで指定されているIPアドレスのデータを既存の設定から削除 
+     * CSVで指定されているMACアドレスのデータを既存の設定から削除 
+     */
+    if (isset($_SESSION[STR_IP]["$sn"]["$f_subnet"]["host"])) {
+
+         $s_hostline = $_SESSION[STR_IP]["$sn"]["$f_subnet"]["host"];
+
+         /* 改行で区切る */
+         $s_hosts = explode("\n", $s_hostline);
+
+         /* 全てホスト名を繰り返す */
+         foreach ($s_hosts as $s_host) {
+
+            /* [host]の中身が空ならcontinue */
+            if ($s_host == "") {
+                continue;
+            }
+
+            /* コンマで分析 */
+            list($s_host, $s_mac, $s_ip, $s_hostname, $s_select) = explode(",", $s_host);
+
+            $s_hostname = ltrim($s_hostname, "\"");
+            $s_hostname = rtrim($s_hostname, "\"");
+
+            $check_s_mac = str_replace(":", "", $s_mac);
+            $check_f_mac = str_replace(":", "", $f_mac);
+
+            /* MACアドレスが重複しているか */
+            if ($check_s_mac == $check_f_mac) {
+                /* 既存データのホスト名を削除 */
+                delete_host_dup($sn, $f_subnet, $s_hostname);
+                $log_msg = sprintf($msgarr['37008'][LOG_MSG], $sn, $f_subnet, $s_hostname, $f_mac);
+                info_syslog($log_msg);
+            }
+
+            /* IPアドレスが重複しているか */
+            if ($f_ip != "") {
+                if ($s_ip == $f_ip) {
+                    /* 既存データのホスト名を削除 */
+                    delete_host_dup($sn, $f_subnet, $s_hostname);
+                    $log_msg = sprintf($msgarr['37009'][LOG_MSG], $sn, $f_subnet, $s_hostname, $f_ip);
+                    info_syslog($log_msg);
+                }
+            }
+        }
+    }    
+
+    /* CSVで指定されているホスト名が重複していないかチェック */
+    if (isset($_SESSION[STR_IP]["$sn"]["$f_subnet"]["host"])) {
+
+         $s_hostline = $_SESSION[STR_IP]["$sn"]["$f_subnet"]["host"];
+
+         /* 改行で区切る */
+         $s_hosts = explode("\n", $s_hostline);
+
+         /* 全てホスト名を繰り返す */
+         foreach ($s_hosts as $s_host) {
+
+            /* [host]の中身が空ならcontinue */
+            if ($s_host == "") {
+                continue;
+            }
+
+            /* コンマで分析 */
+            list($s_host, $s_mac, $s_ip, $s_hostname, $s_select) = explode(",", $s_host);
+
+            $s_hostname = ltrim($s_hostname, "\"");
+            $s_hostname = rtrim($s_hostname, "\"");
+
+            /* ホスト名が重複しているか */
+            if ($s_hostname == $f_hostname) {
+                return 1;
+            }
+        }
+    }         
+
+    return 0;
+}
+
+/*********************************************************
+ * delete_host_dup()
+ *
+ * CSVで指定されているIPアドレスのデータを既存の設定から削除
+ * CSVで指定されているMACアドレスのデータを既存の設定から削除
+ * 
+ * [引数]
+ *      $sn           $_SESSIONにあるshared-network
+ *      $subnet       $_SESSIONにあるサブネット
+ *      $s_hostname   削除するホスト名
+ *
+ * [返り値]
+ *      なし
+ **********************************************************/
+function delete_host_dup($sn, $subnet, $s_hostname)
+{
+    /* [host]の中を改行で分割 */
+    $hosts = explode("\n", $_SESSION[STR_IP]["$sn"]["$subnet"]["host"]);
+
+    /* snが同じか */
+    $new_host = "";
+
+    /* sessionにすべてホスト名を繰り返す */
+    foreach ($hosts as $host) {
+
+        if ($host == "") {
+            continue;
+        }
+
+        /* カンマでホスト名文字列を分析 */
+        $pieces = explode(",", $host);
+
+        /* ホスト名を取得 */
+        $hostname = trim($pieces[3], "\"");
+
+        /* 削除ホスト名対象を見つけるなら、次へ */
+        if (($s_hostname === $hostname)) {
+            continue;
+        }
+ 
+        /* 他のホストの設定をそののまま */
+        $new_host .= $host . "\n";
+    }
+
+    /* 重複データの削除の後に、ホスト名を残ってない場合 */
+    if ($new_host === "") {
+        unset($_SESSION[STR_IP]["$sn"]["$subnet"]["host"]);
+    } else {
+        $_SESSION[STR_IP]["$sn"]["$subnet"]["host"] = $new_host;
+    }
+}
+
+/*********************************************************
+ * delete_dup_data_in_dhcp
+ *
+ * 既存データにMACアドレスとかIPアドレスを存在したら、
+ * 既存のデータのホスト名を作成する
+ *
+ * [引数]
+ *      $file_data   csvのファイルのデータ
+ *      $log_msg     ログメッセージ(参照データ)
+ *      $err_msg     エラーメッセージ(参照データ)
+ *
+ * [返り値]
+ *      TRUE    正常
+ *      FALSE   異常
+ **********************************************************/
+function delete_dup_data_in_dhcp($file_data, &$log_msg, &$err_msg)
+{
+    global $msgarr;
+    $error = FALSE;
+    $line = 0;
+  
+    foreach ($file_data as $data) {
+
+        $line++;
+
+        /* 既存データにIPアドレスとかMACアドレスを存在したら、ホスト名を削除 */
+        $ret = delete_dup_data_line($data);
+
+        /* ホスト名重複 */
+        if ($ret === 1) {
+            $log_msg = sprintf($msgarr['34015'][LOG_MSG], $line);
+            $err_msg = sprintf($msgarr['34015'][SCREEN_MSG], $line);
+            $error = TRUE;
+            break;
+        }
+
+        /* shared-networkを存在しない  */
+        if ($ret === 2) {
+            $log_msg = sprintf($msgarr['34022'][LOG_MSG], $line);
+            $err_msg = sprintf($msgarr['34022'][SCREEN_MSG], $line);
+            $error = TRUE;
+            break;
+        }
+    }
+
+    /* エラーを発生したら */
+    if ($error) {
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/*********************************************************
+ * send_error_mail
+ *
+ * エラー通知のメールを送信する
+ *
+ * [引数]
+ *      $error_msg    エラーメッセージ
+ *
+ * [返り値]
+ *      TRUE    正常
+ *      FALSE   異常
+ **********************************************************/
+function send_error_mail($error_msg, $csv_data_tags = array()) 
+{
+    global $web_conf;
+    global $msgarr;
+
+    /* 現在の日時を取得 */
+    $now_time = date(DATE_FORMAT, time());
+
+    /* UTF8に変換 */
+    $error_msg = mb_convert_encoding($error_msg, UTF8_ENCODEING, EUCJP_ENCODEING);
+
+    /* メールの置換タグ */
+    $tags = array(
+        '{$PROCESS_NAME}' => PROCESS_NAME,
+        '{$EXE_TIME}'     => $now_time,
+        '{$ERROR_MSG}'    => $error_msg,
+    );
+
+    /* メールの送信 */
+    $ret = sendmail_to_admin(MAIL_TMPL_NG, $web_conf["dhcpadmin"]["mailtoaddr"],
+                             $web_conf["dhcpadmin"]["mailfromaddr"], $tags, $csv_data_tags);
+    /* メール送信が失敗したら */
+    if ($ret === FALSE) {
+        $log_msg = sprintf($msgarr['37004'][LOG_MSG], $web_conf["dhcpadmin"]["mailtoaddr"]);  
+        result_log(PROCESS_NAME . ":NG:" . $log_msg, LOG_ERR);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/*********************************************************
+ * send_success_mail
+ *
+ * 成功通知のメールを送信する
+ *
+ * [引数]
+ *      $log_msg          ログメッセージ
+ *      $$csv_data_tags   CVSデータのタグ
+ *
+ * [返り値]
+ *      TRUE    正常
+ *      FALSE   異常
+ **********************************************************/
+function send_success_mail($log_msg, $csv_data_tags)
+{
+    global $web_conf;
+    global $msgarr;
+
+    /* 現在の日時を取得 */
+    $now_time = date(DATE_FORMAT, time());
+
+    /* メールの置換タグ */
+    $tags = array(
+        '{$PROCESS_NAME}' => PROCESS_NAME,
+        '{$EXE_TIME}'     => $now_time,
+    );
+
+    /* メールの送信 */
+    $ret = sendmail_to_admin(MAIL_TMPL_OK, $web_conf["dhcpadmin"]["mailtoaddr"],
+                                $web_conf["dhcpadmin"]["mailfromaddr"],
+                                $tags, $csv_data_tags);
+    /* メール送信が失敗したら */
+    if ($ret === FALSE) {
+        $log_msg = sprintf($msgarr['37004'][LOG_MSG], $web_conf["dhcpadmin"]["mailtoaddr"]);
+        result_log(PROCESS_NAME . ":NG:" . $log_msg, LOG_ERR);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/*********************************************************
+ * program_exit_ng
+ *
+ * ログメッセージを出力する
+ * エラーメールを送信する
+ * ロックファイルを削除する
+ *
+ * [引数]
+ *      $err_msg        エラーメッセージ
+ *      $log_msg        ログメッセージ
+ *      $csv_filename   CSVファイル名
+ *      $csv_filedata   CSVデータのタグ
+ *
+ * [返り値]
+ *      void
+ **********************************************************/
+function program_exit_ng($err_msg, $log_msg)
+{
+    global $msgarr;
+    global $basedir;
+    global $domain;
+    global $lock_file;
+
+    /* メール送信 */
+    send_error_mail($err_msg);
+
+    /* エラーログの出力 */
+    $log_msg = sprintf(LOG_FMT_ERR_OTHER, PROCESS_NAME, $log_msg);
+    result_log($log_msg);
+
+    /* ロックファイルの削除 */
+    $ret = import_csv_del_lockfile();
+    if ($ret != FUNC_TRUE) {
+        $err_msg = sprintf($msgarr['37005'][SCREEN_MSG], $lock_file);
+        $log_msg = sprintf($msgarr['37005'][LOG_MSG], $lock_file);
+        error_syslog($log_msg);
+        send_error_mail($err_msg);
+    }
+
+    return;
+}
+
+/*********************************************************
+ * backup_file_csv
+ *
+ * CSVファイルをバックアップする
+ *
+ * [引数]
+ *      $filename   CSVファイル名
+ *      $mode       モード
+ *                       1: CSVファイルの連携は成功した
+ *                       2: CSVファイルの連携の途中にエラーを発生した
+ *
+ * [返り値]
+ *      $csv_filedata        CSVファイルの内容
+ *      FALSE                異常
+ **********************************************************/
+function backup_file_csv($filename, $mode = 1)
+{
+    global $web_conf;
+    global $msgarr;
+
+    /* 正常モード */
+    if ($mode == 1) {
+        $back_filename = sprintf(BACKUP_CSV_OK, $filename);
+    /* 異常モード */
+    } else {
+        $back_filename = sprintf(BACKUP_CSV_NG, $filename);
+    }
+
+    /* 元々ファイルパスの作成 */
+    $org_filepath = $web_conf["dhcpadmin"]["pathtocsvinput"]. "/". $filename;
+
+    /* バックアップファイルパスの作成 */
+    $back_filepath = $web_conf["dhcpadmin"]["pathtocsvbackup"]. "/". $back_filename;
+
+    /* CSVファイルの内容を取得 */
+    $csv_filedata = file_get_contents($org_filepath);
+    if ($csv_filedata === FALSE) {
+        $err_msg = sprintf($msgarr['37003'][SCREEN_MSG], $csv_filepath);
+        $log_msg = sprintf($msgarr['37003'][LOG_MSG], $csv_filepath);
+        error_syslog($log_msg);
+        send_error_mail($err_msg);
+    }
+
+    /* UTF-8に変換 */
+    $csv_filedata = mb_convert_encoding($csv_filedata, UTF8_ENCODEING, SJIS_ENCODEING);
+
+    /* CSVファイルの取得に失敗してもCSVファイルをバックアップする */
+    $ret = rename($org_filepath, $back_filepath);
+
+    /* エラーを発生したら */
+    if ($ret === FALSE) {
+        $err_msg = sprintf($msgarr['37006'][SCREEN_MSG], $org_filepath, $back_filepath);
+        $log_msg = sprintf($msgarr['37006'][LOG_MSG], $org_filepath, $back_filepath);
+        error_syslog($log_msg);
+        send_error_mail($err_msg, $filename, $csv_filedata);
+    }
+
+    return $csv_filedata;
+}
+
+/*********************************************************
+ * process_listifle_ok
+ *
+ * OK-CSVファイルを処理する
+ *   - CSVファイルをバックアップする
+ *   - 成功メールを送信する
+ *
+ * [引数]
+ *      $listfile   CSVファイルの配列
+ *
+ * [返り値]
+ *      TRUE        正常
+ *      FALSE       異常
+ **********************************************************/
+function process_listifle_ok($listfile)
+{
+    global $msgarr;
+    $count_idx = 0;
+    $list_file_str = "";
+
+    if ($listfile === array()) {
+        return;
+    }
+    
+    /* CSVデータのループタグ */
+    $mail_data_csv = array();
+
+    /* 全てファイルを繰り返してバックアップする */
+    foreach ($listfile as $file_info) {
+
+        /* ファイルのバックアップ */
+        $csvfile_data = backup_file_csv($file_info["filename"], 1);
+
+        /* CSVデータのループタグの作成 */
+        $mail_data_csv[$count_idx]['{$CSV_FILENAME}'] = $file_info["filename"];
+        $mail_data_csv[$count_idx]['{$CSV_CONTENT}']  = $csvfile_data;
+
+        if ($list_file_str === "") {
+            $list_file_str = $file_info["filename"];
+        } else {
+            $list_file_str .= ", ". $file_info["filename"];
+        }
+
+        $count_idx++;
+    }
+
+    /* ログメッセージの作成 */
+    $log_msg = sprintf($msgarr['37007'][LOG_MSG], $list_file_str);
+    $log_msg = sprintf(LOG_FMT_OK, PROCESS_NAME, $log_msg);
+    result_log($log_msg);
+
+    /* 成功メールの送信 */
+    $ret = send_success_mail($log_msg, $mail_data_csv);
+    if ($ret === FALSE) {
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/*********************************************************
+ * process_listifle_ng
+ *
+ * NG-CSVファイルを処理する
+ *   - CSVファイルをバックアップする
+ *   - エラーメールを送信する
+ *   - ロックファイルを削除する 
+ *
+ * [引数]
+ *      $listfile   CSVファイルの配列
+ *      $syserrmsg  システムエラー
+ *
+ * [返り値]
+ *      TRUE        正常
+ *      FALSE       異常
+ **********************************************************/
+function process_listifle_ng($listfile, $syserrmsg = NULL)
+{
+    global $msgarr;
+    $count_idx = 0;
+    $list_file_str = "";
+
+    if ($listfile !== array()) {
+    
+        /* CSVデータのループタグ */
+        $mail_data_csv = array();
+
+        /* 全てファイルを繰り返してバックアップする */
+        foreach ($listfile as $file_info) {
+
+            /* ファイルのバックアップ */
+            $csvfile_data = backup_file_csv($file_info["filename"], 2);
+
+            /* CSVデータのループタグの作成 */
+            $mail_data_csv[$count_idx]['{$CSV_ERROR}'] = mb_convert_encoding($file_info["errmsg"], 
+                                                                   UTF8_ENCODEING, EUCJP_ENCODEING);
+            $mail_data_csv[$count_idx]['{$CSV_FILENAME}'] = $file_info["filename"];
+            $mail_data_csv[$count_idx]['{$CSV_CONTENT}']  = $csvfile_data;
+    
+            if (!empty($file_info["logmsg"])) {
+                /* ログメッセージの出力 */
+                error_syslog($file_info["logmsg"]);
+            }
+
+            $count_idx++;
+        }
+
+        /* エラーメールの送信 */
+        $ret = send_error_mail($syserrmsg, $mail_data_csv);
+    }
+
+    /* ロックファイルの削除 */
+    $ret = import_csv_del_lockfile();
+
+    /* エラーを発生したら */
+    if ($ret !== FUNC_TRUE) {
+        $log_msg = sprintf($msgarr['37005'][LOG_MSG], $lock_file);
+        $err_msg = sprintf($msgarr['37005'][SCREEN_MSG], $lock_file);
+
+        /* ログの出力 */
+        error_syslog($log_msg);
+
+        /* エラーメールの送信 */
+        send_error_mail($syserrmsg);
+    }
+
+    return;
+}
+
+/*********************************************************
+ * error_syslog
+ *
+ * エラーログを出力する
+ *
+ * [引数]
+ *      $log_msg    ログメッセージ
+ *
+ * [返り値]
+ *      void
+ **********************************************************/
+function error_syslog($log_msg) 
+{
+    $log_msg = sprintf(LOG_FMT_ERR_OTHER, PROCESS_NAME, $log_msg);
+    /* 成功ログの出力 */
+    result_log($log_msg);
+}
+
+/*********************************************************
+ * info_syslog
+ *
+ * 情報ログを出力する
+ *
+ * [引数]
+ *      $log_msg    ログメッセージ
+ *
+ * [返り値]
+ *      void
+ **********************************************************/
+function info_syslog($log_msg)
+{
+    $log_msg = sprintf(LOG_FMT_INFO, PROCESS_NAME, $log_msg);
+    /* 成功ログの出力 */
+    result_log($log_msg);
+}
+
+/********************************************************************
+ * MAIN                                                             *
+ ********************************************************************/
+/* $basedirと$topdirのセット */
+global $basedir;
+global $domain;
+global $lock_file;
+
+/* 引数のチェック */
+if ($argc != 2) {
+    print("Usage dhcpadmin_import_csv domain_name\n");
+    exit(1);
+}
+
+/* ベースディレクトリ */
+$basedir = BASE_DIR;
+
+/* ドメイン名の設定 */
+$domain = $argv[1];
+
+/* ロックファイルパス */
+$lock_file = $basedir . VARDIR . $domain . '/' . LOCKFILE;
+
+$list_file_ok = array();
+$list_file_ng = array();
+
+/* 指定しているドメインの設定ファイルの読み込み */
+if (read_web_conf('dhcpadmin') === FALSE) {
+    print $err_msg;
+    print "\n";
+    exit(1);
+}
+
+/* メッセージファイルの読込 */
+if (make_msgarr(MESSAGEFILE) === FALSE) {
+    print $err_msg;
+    print "\n";
+    exit(1);
+}
+
+/* 二重ログインのチェック */
+$ret = import_csv_login_check($lock_file);
+
+/*  ロックファイルの作成に失敗しました場合 */
+if ($ret === FUNC_FALSE) {
+    $err_msg = sprintf($msgarr['27006'][SCREEN_MSG], $lock_file);
+    $log_msg = sprintf($msgarr['27006'][LOG_MSG], $lock_file);
+    error_syslog($log_msg);
+    send_error_mail($err_msg);
+    exit(1);
+/* ロックしている場合 */
+} elseif ($ret === LOCK_FALSE) {
+    $err_msg = sprintf($msgarr['27005'][SCREEN_MSG], PROCESS_NAME. ":". BATCH_IP);
+    $log_msg = sprintf($msgarr['27005'][LOG_MSG], PROCESS_NAME. ":". BATCH_IP);
+    error_syslog($log_msg);
+    send_error_mail($err_msg);
+    exit(1);
+}
+
+/* csvを保存するディレクトリ */
+$dir_save_csv   = $web_conf["dhcpadmin"]["pathtocsvinput"];
+
+/* csvをバックアップするディレクトリ */
+$dir_backup_csv = $web_conf["dhcpadmin"]["pathtocsvbackup"];
+
+/* CSVディレクトリをチェックする */
+if (!is_dir($dir_save_csv)) {
+    $err_msg = sprintf($msgarr['37001'][SCREEN_MSG], $dir_save_csv);
+    $log_msg = sprintf($msgarr['37001'][LOG_MSG], $dir_save_csv);
+    program_exit_ng($err_msg, $log_msg);
+    exit(1);
+}
+
+/* CSVのバックアップディレクトリをチェックする */
+if (!is_dir($dir_backup_csv)) {
+    $err_msg = sprintf($msgarr['37001'][SCREEN_MSG], $dir_backup_csv);
+    $log_msg = sprintf($msgarr['37001'][LOG_MSG], $dir_backup_csv);
+    program_exit_ng($err_msg, $log_msg);
+    exit(1);
+}
+
+/* CSVディレクトリにファイルを取得する */
+$listfile = scan_dir($dir_save_csv);
+if ($listfile === FALSE) {
+    $err_msg = sprintf($msgarr['37002'][SCREEN_MSG], $dir_backup_csv);
+    $log_msg = sprintf($msgarr['37002'][LOG_MSG], $dir_backup_csv);
+    program_exit_ng($err_msg, $log_msg);
+    exit(1);
+}
+
+/* CSVファイルを存在しない */
+if ($listfile === array()) {
+
+    /* ロックファイルの削除 */
+    $ret = import_csv_del_lockfile();
+    if ($ret != FUNC_TRUE) {
+        $log_msg = sprintf($msgarr['37005'][LOG_MSG], $lock_file);
+        $err_msg = sprintf($msgarr['37005'][LOG_MSG], $lock_file);
+        error_syslog($log_msg);
+        send_error_mail($err_msg);
+        exit(1);
+    }
+
+    $err_msg = sprintf($msgarr['37013'][SCREEN_MSG], $dir_save_csv);
+    $log_msg = sprintf($msgarr['37013'][LOG_MSG], $dir_save_csv);
+//    send_error_mail($err_msg);
+    info_syslog($log_msg);
+
+    exit(0);
+}
+
+/* dhcpd.confを分析 */
+$ret = analyze_dhcpd_conf($web_conf["dhcpadmin"]["dhcpdconfpath"], STR_IPV4);
+if ($ret === FALSE) {
+    $err_msg = sprintf($msgarr['27004'][SCREEN_MSG], $dir_backup_csv);
+    $log_msg = sprintf($msgarr['27004'][LOG_MSG], $dir_backup_csv);
+    program_exit_ng($err_msg, $log_msg);
+    exit(1);
+}
+
+/* 取得された配列ファイルを繰り返す */
+foreach ($listfile as $csv_filename => $time_created) {
+
+    /* CSVファイルパスの作成 */
+    $csv_filepath = $dir_save_csv. "/". $csv_filename; 
+ 
+    /* CSVファイルの読み込み */
+    $file_data = file($csv_filepath);
+
+    /* エラーを発生したら */
+    if ($file_data === FALSE) {
+        $csv_file_info["filename"] = $csv_filename;
+        $csv_file_info["errmsg"] = sprintf($msgarr['37003'][SCREEN_MSG], $csv_filepath);
+        $csv_file_info["logmsg"] = sprintf($msgarr['37003'][LOG_MSG], $csv_filepath);
+        array_push($list_file_ng, $csv_file_info);
+        continue;   
+    }
+
+    /* カラム数チェック */
+    $line = check_column($file_data);
+    if ($line != 0) {
+        $csv_file_info["filename"] = $csv_filename;
+        $csv_file_info["errmsg"] = sprintf($msgarr['34001'][SCREEN_MSG], $line);
+        $csv_file_info["logmsg"] =  sprintf($msgarr['34001'][LOG_MSG], $line);
+        array_push($list_file_ng, $csv_file_info);
+        continue;
+    }
+
+    /* カラムの値のチェック */
+    $ret = check_data_csv($file_data, $log_msg, $err_msg);
+    if ($ret === FALSE) {
+        $csv_file_info["filename"] = $csv_filename;
+        $csv_file_info["errmsg"] = $err_msg;
+        $csv_file_info["logmsg"] = $log_msg;
+        array_push($list_file_ng, $csv_file_info);
+        continue;
+    }
+
+    /* CSVファイルの重複をチェック */
+    $ret = check_duplication_csv_only($file_data, $log_msg, $err_msg);
+    if ($ret === FALSE) {
+        $csv_file_info["filename"] = $csv_filename;
+        $csv_file_info["errmsg"] = $err_msg;
+        $csv_file_info["logmsg"] = $log_msg;
+        array_push($list_file_ng, $csv_file_info);
+        continue;
+    }
+
+    /* 重複をチェックするモードなら */
+    if ($web_conf["dhcpadmin"]["importcsvmode"] === MODE_CHECK_DUP) {
+
+        /* 重複のチェック */
+        $ret = check_dup_csv_and_dhcpd($file_data, $log_msg, $err_msg);
+        if ($ret === FALSE) {
+            $csv_file_info["filename"] = $csv_filename;
+            $csv_file_info["errmsg"] = $err_msg;
+            $csv_file_info["logmsg"] = $log_msg;
+            array_push($list_file_ng, $csv_file_info);
+            continue;
+        }
+
+    /* 重複をチェックしないモードなら */
+    } else {
+        /* 既存データの重複しているIPアドレスとMACアドレスを含むホスト名を削除する */
+        $ret = delete_dup_data_in_dhcp($file_data, $log_msg, $err_msg);
+        if ($ret === FALSE) {
+            $csv_file_info["filename"] = $csv_filename;
+            $csv_file_info["errmsg"] = $err_msg;
+            $csv_file_info["logmsg"] = $log_msg;
+            array_push($list_file_ng, $csv_file_info);
+            continue;
+        }
+    }
+
+    /* 既存データとCSVのデータをマージ */
+    $ret = add_host_session($file_data);
+    if ($ret === FALSE) {
+        $csv_file_info["filename"] = $csv_filename;
+        $csv_file_info["errmsg"] = sprintf($msgarr['34022'][SCREEN_MSG], $line);
+        $csv_file_info["logmsg"] = sprintf($msgarr['34022'][LOG_MSG], $line);
+        array_push($list_file_ng, $csv_file_info);
+        continue;
+    }
+
+    /* 正常なリストに格納 */
+    $csv_file_info["filename"] = $csv_filename;
+    $csv_file_info["errmsg"] = NULL;
+    $csv_file_info["logmsg"] = NULL;
+    array_push($list_file_ok, $csv_file_info);
+}
+
+/* バックアップファイルのパスを作成 */
+$backup_path = $web_conf["dhcpadmin"]["dhcpdconfpath"] . ".backup";
+
+/* バックアップファイルの作成 */
+$ret = create_back_file($web_conf["dhcpadmin"]["dhcpdconfpath"], $backup_path);
+
+/* エラーを発生したら */
+if ($ret === FUNC_FALSE) {
+    $log_msg = sprintf($msgarr['36001'][LOG_MSG], $backup_path);
+    $err_msg = sprintf($msgarr['36001'][SCREEN_MSG], $backup_path);
+
+    /* CSVファイルのデータをマージ */
+    $list_file_ng = array_merge($list_file_ng, $list_file_ok);
+
+    process_listifle_ng($list_file_ng, $err_msg);
+    error_syslog($log_msg);
+
+    exit(1);
+}
+
+/* pidを取得する */
+$pid = getmypid();
+
+/* dhcpd一時ファイルの作成 */
+$tmpfile_path = $web_conf["dhcpadmin"]["dhcpdconfpath"]. ".tmp." . $pid;
+
+/* セッションの情報から一時ファイルを作成する */
+$ret = create_tmp_file($tmpfile_path);
+
+/* エラーを発生したら */
+if ($ret === FUNC_FALSE) {
+    $err_msg = sprintf($msgarr['36002'][SCREEN_MSG], $tmpfile_path);
+    $log_msg = sprintf($msgarr['36002'][LOG_MSG], $tmpfile_path);
+
+    /* CSVファイルのデータをマージ */
+    $list_file_ng = array_merge($list_file_ng, $list_file_ok);
+
+    process_listifle_ng($list_file_ng, $err_msg);
+    error_syslog($log_msg);
+    exit(1);
+}
+
+/* 設定ファイルを上書きします */
+$ret = overwrite_setting_file($tmpfile_path, $web_conf["dhcpadmin"]["dhcpdconfpath"]);
+
+/* エラーを発生したら */
+if ($ret === FUNC_FALSE) {
+    $err_msg = sprintf($msgarr['36003'][LOG_MSG], $backup_path);
+    $log_msg = sprintf($msgarr['36003'][LOG_MSG], $backup_path);
+
+    /* CSVファイルのデータをマージ */
+    $list_file_ng = array_merge($list_file_ng, $list_file_ok);
+
+    process_listifle_ng($list_file_ng, $err_msg);
+    error_syslog($log_msg);
+    exit(1);
+}
+
+/* configtestコマンド */
+$ret = run_command($web_conf["dhcpadmin"]["dhcpdconftestcom"]);
+
+/* エラーを発生したら */
+if ($ret === FUNC_FALSE) {
+    /* バックアップファイルからdhcpd.confを戻る */
+    rename($backup_path, $web_conf["dhcpadmin"]["dhcpdconfpath"]);
+
+    /* dhcpdを再起動する */
+    run_command($web_conf["dhcpadmin"]["dhcpdrestartcom"]);
+
+    $err_msg = $msgarr['36004'][SCREEN_MSG];
+    $log_msg = $msgarr['36004'][LOG_MSG];
+
+    /* CSVファイルのデータをマージ */
+    $list_file_ng = array_merge($list_file_ng, $list_file_ok);
+
+    process_listifle_ng($list_file_ng, $err_msg);
+    error_syslog($log_msg);
+    exit(1);
+}
+
+/* 再起動する */
+$ret = run_command($web_conf["dhcpadmin"]["dhcpdrestartcom"]);
+
+/* エラーを発生したら */
+if ($ret === FUNC_FALSE) {
+
+    /* バックアップファイルからdhcpd.confを戻る */
+    rename($backup_path, $web_conf["dhcpadmin"]["dhcpdconfpath"]);
+
+    /* dhcpdを再起動する */
+    run_command($web_conf["dhcpadmin"]["dhcpdrestartcom"]);
+
+    $err_msg = sprintf($msgarr['36005'][SCREEN_MSG], $backup_path);
+    $log_msg = sprintf($msgarr['36005'][LOG_MSG], $backup_path);
+
+    /* CSVファイルのデータをマージ */
+    $list_file_ng = array_merge($list_file_ng, $list_file_ok);
+
+    process_listifle_ng($list_file_ng, $err_msg);
+    error_syslog($log_msg);
+    exit(1);
+}
+
+/* 正常なCSVファイル */
+process_listifle_ok($list_file_ok);
+
+/* 異常なCSVファイル */
+process_listifle_ng($list_file_ng);
+
+/* 正常に終了 */
+exit(0);
+
+?>

@@ -1,0 +1,160 @@
+<?php
+
+/*
+ * postLDAPadmin
+ *
+ * Copyright (C) 2006,2007 DesigNET, INC.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ */
+
+define("MAX_DOMAIN_LENGTH", 128);
+
+/*********************************************************
+ * check_path()
+ *
+ * 設定ファイルの制限値チェック
+ *
+ * [引数]
+ *      $path       ファイルのパス、コマンド
+ * [返り値]
+ *      TRUE         正常
+ *      FALSE        異常
+ **********************************************************/
+function check_path($path)
+{
+    /* 文字数チェック */
+    /* pathに値があるか調べる */
+    if (isset($path) && $path != "") {
+        $letters = strlen($path);
+        if ($letters < 1) {
+            return FALSE;
+        }
+
+        /* 半角英大小文字、数字、特定記号のみ許可 */
+        $num = "0123456789";
+        $sl = "abcdefghijklmnopqrstuvwxyz";
+        $ll = strtoupper($sl);
+        $sym = "/.-_ ";
+        $allow_letter = $num . $sl . $ll . $sym;
+        if (strspn($path, $allow_letter) != $letters) {
+            return FALSE;
+        }
+    }
+    /*値がなかったらTRUE*/
+    return TRUE;
+}
+
+/*********************************************************
+ * check_defdomain()
+ *
+ * 設定ファイルのDefDoaminの制限値チェック
+ *
+ * [引数]
+ *      $defdomain       サブネット情報に自動的に入力されるドメイン名
+ * [返り値]
+ *      TRUE         正常
+ *      FALSE        異常
+ **********************************************************/
+function check_defdomain($defdomain)
+{
+    /* 文字数チェック */
+    /* defdomainに値があるか調べる */
+    if (isset($defdomain) && $defdomain != "") {
+        $letters = strlen($defdomain);
+        if ($letters < 1 || $letters > MAX_DOMAIN_LENGTH) {
+            return FALSE;
+        }
+
+        /* 半角英大小文字、数字、特定記号のみ許可 */
+        $num = "0123456789";
+        $sl = "abcdefghijklmnopqrstuvwxyz";
+        $ll = strtoupper($sl);
+        $sym = "-.";
+        $allow_letter = $num . $sl . $ll . $sym;
+        $head = substr($defdomain, 0, 1);
+        $end = mb_substr($defdomain, -1);
+        if (strspn($defdomain, $allow_letter) != $letters ||
+            strspn($head, $sym) == 1 || strspn($end, $sym) == 1) {
+            return FALSE;
+        }
+    }
+    /*値がなかったらTRUE*/
+    return TRUE;
+}
+
+/*********************************************************
+ * check_csv_mode()
+ *
+ * 設定ファイルのimportcsvmode項目をチェックする
+ *
+ * [引数]
+ *      $importcsvmode    CSVモード
+ * [返り値]
+ *      TRUE         正常
+ *      FALSE        異常
+ **********************************************************/
+function check_csv_mode($importcsvmode)
+{
+    $allow_mode =  array(1, 2);
+
+    if (in_array($importcsvmode, $allow_mode)) {
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+/* 設定ファイル項目 */
+$conf_keys["dhcpadmin"] = array(
+                    "dhcpdconfpath"     => "check_path",
+                    "dhcpd6confpath"    => "check_path",
+                    "dhcpdleasespath"   => "check_path",
+                    "dhcpd6leasespath"  => "check_path",
+                    "locktime"          => "is_positive_number",
+                    "defdomain"         => "check_defdomain",
+                    "defleasetime"      => "is_positive_number",
+                    "defmaxleasetime"   => "is_positive_number",
+                    "dhcpdrestartcom"   => "check_path",
+                    "dhcpd6restartcom"  => "check_path",
+                    "dhcpdcheckcom"     => "check_path",
+                    "dhcpd6checkcom"    => "check_path",
+                    "dhcpdconftestcom"  => "check_path",
+                    "dhcpd6conftestcom"  => "check_path",
+                    "leaseslistnum"     => "is_positive_number",
+                    "importcsvmode"     => "check_csv_mode",
+                    "pathtocsvinput"    => "no_check",
+                    "pathtocsvbackup"   => "no_check",
+                    "mailtoaddr"        => "no_check",
+                    "mailfromaddr"      => "no_check",
+);
+
+
+/* 設定のデフォルト値 */
+$conf_def["dhcpadmin"] = array(
+                    "dhcpdconfpath"     => "/etc/dhcp/dhcpd.conf",
+                    "dhcpd6confpath"    => "/etc/dhcp/dhcpd6.conf",
+                    "dhcpdleasespath"   => "/var/lib/dhcpd/dhcpd.leases",
+                    "dhcpd6leasespath"  => "/var/lib/dhcpd/dhcpd6.leases",
+                    "dhcpdrestartcom"  => "/usr/bin/sudo /usr/bin/systemctl restart dhcpd",
+                    "dhcpd6restartcom"  => "/usr/bin/sudo /usr/bin/systemctl restart dhcpd6",
+                    "dhcpdcheckcom"  => "/usr/bin/sudo /usr/bin/systemctl status dhcpd",
+                    "dhcpd6checkcom"  => "/usr/bin/sudo /usr/bin/systemctl status dhcpd6",
+                    "dhcpdconftestcom"  => "/usr/bin/sudo /usr/sbin/dhcpd -cf /etc/dhcp/dhcpd.conf -t",
+                    "dhcpd6conftestcom"  => "/usr/bin/sudo /usr/sbin/dhcpd -6 -cf /etc/dhcp/dhcpd6.conf -t",
+                    "locktime"          => "600",
+                    "leaseslistnum"     => "20");
+
+?>

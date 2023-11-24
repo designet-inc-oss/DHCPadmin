@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta http-equiv="Content-Type" content="text/html" charset="EUC-JP">
+  <link rel="stylesheet" href="../../../../css/bootstrap/css/bootstrap-paper.css">
+  <script src="../../../../js/jquery-3.1.1.min.js"></script>
+  <script src="../../../../js/jquery-ui.min.js"></script>
+  <script src="../../../../css/bootstrap/js/bootstrap.min.js"></script>
+  <link rel="stylesheet" href="../../../../css/style.css">
+  <link rel="stylesheet" href="../../../../admin/dhcpadmin.css">
+  <title><<TITLE>></title>
+  <<JAVASCRIPT>>
+<script type="text/javascript">
+<!--
+function selectAll(){
+
+    var str = document.getElementsByTagName("option");
+    for (i=0;i<str.length;i++) {
+        str[i].selected = true;
+    }
+}
+//-->
+</script>
+<script type="text/javascript">
+<!--
+function MoveSelect(fm, sel1, sel2) {
+    for (i = 0; i < fm[sel1].length; i++) {
+        if (fm[sel1].options[i].selected) {
+            fm[sel2].options[fm[sel2].length] = new Option(fm[sel1].options[i].text, fm[sel1].options[i].value);
+            fm[sel1].options[fm[sel1].selectedIndex] = null;
+            i--;
+        }
+    }
+}
+function delmsgConfirm(url) {
+    var msg = "Shared-network:".concat(document.subnet.oldname.value).concat("を削除します。\n削除してよろしいですか？");
+    selectAll();
+    if (window.confirm(msg)) {
+        document.common.del.value = "削除";
+        document.common.action = url;
+        document.common.submit();
+        return true;
+    } else {
+        var str = document.getElementsByTagName("option");
+        for (i=0;i<str.length;i++) {
+            str[i].selected = false;
+        }
+        return false;
+    }
+}
+// -->
+</script>
+</head>
+
+<body>
+<header class="">
+  <nav class="navbar navbar-default navmargin">
+    <div class="navbar-header">
+      <button type="button" class="navbar-toggle" data-toggle="collapse" data-target="#gmenu">
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+        <span class="icon-bar"></span>
+      </button>
+      <div class="navbar-brand"></div>
+    </div>
+
+
+    <div id="gmenu" class="collapse navbar-collapse">
+      <ul class="nav navbar-nav navbar-right ">
+<<START_TAB>>
+<li class="<<ACTIVE>>"><a href="#" onClick="dgpSubmit('<<URL>>')"><span class="glyphicon glyphicon-user" aria-hidden="true"></span><<NAME>></a></li>
+<<END_TAB>>
+<li class=""><a href="#" onClick="dgpSubmit('../../../dhcpadmin_logout.php')"><span class="glyphicon glyphicon-user" aria-hidden="true"></span>ログアウト</a></li>
+      </ul>
+    </div>
+  </nav>
+  <div class="container-fluid fix-padding">
+  </div>
+</header>
+
+<div class="container-fluid">
+  <!-- 左グリッド  -->
+  <div class="row">
+    <!-- 左ナビゲーションバー -->
+    <nav class="aside col-sm-2">
+      <div class="panel panel-default">
+        <ul class="list-group">
+<<START_MENU>>
+<a class="list-group-item  <<ACTIVE>>" href="#"	onClick="dgpSubmit('<<URL>>')"><<NAME>></a>
+<<END_MENU>>
+        </ul>
+      </div>
+    </nav>
+
+    <!-- 右グリッド  -->
+    <div class="col-sm-10">
+      <!-- エラーメッセージ -->
+
+      <!-- メインコンテンツ -->
+      <div class="panel panel-primary">
+        <div class="panel-heading">
+          <h3 class="panel-title">Shared-network編集</h3>
+        </div>
+        <div class="ErrorMessage"></div>
+        <div class="panel-body">
+          <!-- フォーム -->
+          <div class="col-sm-12">
+            <form class="form-horizontal" method="POST" action="mod.php" name="subnet">
+              <div class="form-group well">
+
+<<MESSAGE>>
+                <div class="form-group">
+                  <label for="user" class="col-sm-3 control-label">Shared-network名</label>
+                  <div class="col-sm-8">
+                    <input type="text" class="form-control" name="networkname" maxlength="255" value="<<SN>>">
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label for="user" class="col-sm-3 control-label">所属するサブネット</label>
+                  <table>
+                    <tr>
+                      <td>
+                        <table>
+                          <tr><td>所属するサブネット</td></tr>
+                          <tr>
+                            <td>
+                              <select class="select_subnet" name="selectleft[]" multiple>
+                                <<SUBNET>>
+                              </select>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+                      <td>
+                        <input type="button" value="←" name="left" onclick="MoveSelect(this.form,'selectright[]','selectleft[]');"><br>
+                        <input type="button" value="→" name="right" onclick="MoveSelect(this.form,'selectleft[]','selectright[]');">
+                      </td>
+                      <td>
+                        <table>
+                          <tr><td>未所属のサブネット</td></tr>
+                          <tr>
+                            <td>
+                              <select class="select_subnet" name="selectright[]" multiple>
+                                <<OTHERSUBNET>>
+                              </select>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>
+                  </table>
+                </div>
+              </div>
+
+              <!-- ボタン -->
+              <div class="form-group">
+                <div class="col-sm-12">
+                  <input type="hidden" name="oldname" value="<<OLDNAME>>">
+                  <input type="hidden" name="oldsubnet" value="<<OLDSUBNET>>">
+                  <input type="hidden" name="oldsubnet" value="<<OLDOTHERSUBNET>>">
+                  <<SK>>
+                  <button type="submit" name="mod" class="btn btn-primary" onClick="selectAll()">更新</button>
+                  <button type="submit" name="delete" class="btn btn-primary" onclick="return delmsgConfirm('mod.php')">削除</button>
+                  <button type="submit" name="back" class="btn btn-primary">戻る</button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<footer class="footer nav navbar-default">
+    <nav class="pull-right">
+      <div class="navbar-brand"></div>
+    </nav>
+</footer>
+
+<form method="post" name="common">
+  <<SK>>
+</form>
+
+</body>
+
+</html>
