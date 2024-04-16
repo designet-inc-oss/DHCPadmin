@@ -147,11 +147,13 @@ function get_lease_data($postdata, &$looptag)
         if (preg_match($format_data["start"], $line, $tmp)) {
             $starts = preg_replace("/$starthead /", "", $tmp[0]);
             $starts = preg_replace("/:[0-9]{1,2}$/", "", $starts);
+            $starts = conv_localtime($starts);
 
         // 貸出期限の検索
         } elseif (preg_match($format_data["end"], $line, $tmp)) {
             $ends = preg_replace("/$endhead /", "",$tmp[0]);
             $ends = preg_replace("/:[0-9]{1,2}$/", "",$ends);
+            $ends = conv_localtime($ends);
 
         // IPアドレスの検索
         } elseif (preg_match($format_data["ip"], $line, $tmp)) {

@@ -4048,5 +4048,54 @@ function Move_Subnets($SubList, $FromSn, $ToSn)
     return;
 }
 
+/*********************************************************
+ * conv_localtime()
+ *
+ * UTCをローカル時間に変更する
+ *
+ * [引数]
+ *	$ut	UTC時間(YYYY/MM/DD hh:mm)
+ *
+ * [返り値]
+ *	ローカル時間(YYYY/MM/DD hh:mm)
+ **********************************************************/
+function conv_localtime($ut)
+{
+    global $web_conf;
+
+    // TimeZoneが設定されていない場合、変換しない
+    if ($web_conf['dhcpadmin']['timezone'] === "") {
+        return($ut);
+    }
+
+    // 現在のタイムゾーンを取得した後、UTCに変更する
+    $tz = date_default_timezone_get();
+    date_default_timezone_set("UTC");
+
+    // 時間の文字列をUnuxタイムスタンプに変換する
+    $t = strtotime($ut);
+    if ($t === false) {
+        result_log("Invalid time format in leases: " . $ut, LOG_ERR);
+	return($ut);
+    }
+
+    // タイムゾーンを設定する
+    $ret = date_default_timezone_set($web_conf['dhcpadmin']['timezone']);
+    if ($ret === false) {
+        result_log("Invalid timezone: " . $web_conf['dhcpadmin']['timezone'], LOG_ERR);
+	return($ut);
+    }
+
+    // ローカル時間に変換する
+    $lt = localtime($t, true);
+    $lt2 = sprintf("%04d/%02d/%02d %02d:%02d",
+        $lt["tm_year"] + 1900, $lt["tm_mon"] + 1, $lt["tm_mday"],
+        $lt["tm_hour"], $lt["tm_min"]);
+
+    // タイムゾーンを元に戻す
+    date_default_timezone_set($tz);
+
+    return($lt2);
+}
 
 ?>

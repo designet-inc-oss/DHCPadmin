@@ -117,6 +117,33 @@ function check_csv_mode($importcsvmode)
     return FALSE;
 }
 
+/*********************************************************
+ * is_timezone()
+ *
+ * 設定ファイルのTimeZone項目をチェックする
+ *
+ * [引数]
+ *      $timezone	タイムゾーン
+ * [返り値]
+ *      TRUE         正常
+ *      FALSE        異常
+ **********************************************************/
+function is_timezone($timezone)
+{
+    // 現在のタイムゾーンを取得しておく
+    $now = date_default_timezone_get();
+
+    // 指定されたタイムゾーンを設定して、リターン値を確認する
+    $ret = date_default_timezone_set($timezone);
+
+    // タイムゾーンを元に戻す
+    date_default_timezone_set($now);
+
+    // 指定されたタイムゾーンの設定の結果を返す
+    return($ret);
+}
+
+
 /* 設定ファイル項目 */
 $conf_keys["dhcpadmin"] = array(
                     "dhcpdconfpath"     => "check_path",
@@ -139,6 +166,7 @@ $conf_keys["dhcpadmin"] = array(
                     "pathtocsvbackup"   => "no_check",
                     "mailtoaddr"        => "no_check",
                     "mailfromaddr"      => "no_check",
+                    "timezone"          => "is_timezone",
 );
 
 
@@ -155,6 +183,8 @@ $conf_def["dhcpadmin"] = array(
                     "dhcpdconftestcom"  => "/usr/bin/sudo /usr/sbin/dhcpd -cf /etc/dhcp/dhcpd.conf -t",
                     "dhcpd6conftestcom"  => "/usr/bin/sudo /usr/sbin/dhcpd -6 -cf /etc/dhcp/dhcpd6.conf -t",
                     "locktime"          => "600",
-                    "leaseslistnum"     => "20");
+                    "leaseslistnum"     => "20",
+                    "timezone"          => "",
+);
 
 ?>

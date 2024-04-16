@@ -19,3 +19,4 @@ PathToCsvInput=/data/csv/input
 PathToCsvBackup=/data/csv/output
 MailToAddr=test1@example.com
 MailFromAddr=test2@dexample.com
+#TimeZone=Asia/Tokyo
