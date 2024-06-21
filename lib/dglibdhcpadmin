@@ -1082,34 +1082,10 @@ function check_format_ip($ip)
     }
 
     /* IPv4の場合の形式チェック */
-    /*分割した値を保存する配列*/
-    $arrar_ip = array();
-    $len = 0;
-
-    /*正規表現を設定する*/
-    $number = '[0-9]{1,3}';
-    $ipregular = '/^'. $number. '\.'. $number. '\.'. $number. '\.'. $number. '$/';
-
-    /*長さを判断*/
-    $len = strlen($ip);
-    if (($len < 7) || ($len > 15)) {
+    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === FALSE) {
         return FUNC_FALSE;
     }
 
-    /*許可文字種*/
-    if (!preg_match($ipregular, $ip)) {
-        return FUNC_FALSE;
-    }
-
-    /*ドットでIPを分割する*/
-    $array_ip = explode(".", $ip);
-    /*255より大きいかどうか判断する*/
-    foreach ($array_ip as $number) {
-        /*255より大きい場合*/
-        if ($number > 255) {
-            return FUNC_FALSE;
-        }
-    }
     return FUNC_TRUE;
 }
 
@@ -1739,39 +1715,11 @@ function check_ip($ip)
     /* 文字数チェック */
     /* ipに値があるか調べる */
     if (isset($ip) && $ip != "") {
-        $length = strlen($ip);
-        if ($length > MAX_IP_LENGTH) {
+        /* IPv4アドレス形式かチェック */
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === FALSE) {
             return FALSE;
         }
 
-        $num = "0123456789";
-        $sym = ".";
-        $allow_letter = $num . $sym;
-        if (strspn($ip, $allow_letter) != $length) {
-            return FALSE;
-        }
-
-        /*分析した値を保存する配列*/
-        $arrar_ip = array();
-
-        /*正規表現を設定する*/
-        $number = '[0-9]{1,}';
-        $ipregular = '/^' . $number . '\.' . $number . '\.' . $number . '\.' . $number . '$/';
-
-        /*許可文字種*/
-        if (!preg_match($ipregular, $ip)) {
-            return FALSE;
-        }
-
-        /*ドットでIPを分割する*/
-        $array_ip = explode(".", $ip);
-        /*255より大きいかどうか判断する*/
-        foreach ($array_ip as $number) {
-            /*255より大きい場合*/
-            if ($number > 255) {
-                return FALSE;
-            }
-        }
         return TRUE;
     }
     /*値がなかったらTRUE*/
