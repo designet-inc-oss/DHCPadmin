@@ -2607,7 +2607,7 @@ function check_duplicate_range($sn, $subnet, $startrange, $endrange, $oldrange =
 
     /*ÈÏ°Ï(Á°)¤ÈÈÏ°Ï(¸å)¤òÈæ³Ó*/
     $ret = strcmp(inet_pton($startrange), inet_pton($endrange));
-    if ($ret >= 0) {
+    if ($ret > 0) {
         $err_msg = sprintf($msgarr['31008'][SCREEN_MSG], $dup_range);
         $log_msg = sprintf($msgarr['31008'][LOG_MSG], $dup_range);
         return FUNC_FALSE;
