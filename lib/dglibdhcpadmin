@@ -1588,12 +1588,13 @@ function check_hostname($hostname)
         }
 
         /* 半角英大小文字、数字、特定記号のみ許可 */
-        $num = "0123456789";
-        $sl = "abcdefghijklmnopqrstuvwxyz";
-        $ll = strtoupper($sl);
-        $sym = "!\"#$%&'()=-~^|@`[{;+:*]}<.>/?\\_";
-        $allow_letter = $num . $sl . $ll . $sym;
+        $allow_letter = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_";
         if (strspn($hostname, $allow_letter) != $length) {
+            return FALSE;
+        }
+
+        /* 先頭が_の場合NG */
+        if (substr($hostname, 0, 1) == "_") {
             return FALSE;
         }
     }
